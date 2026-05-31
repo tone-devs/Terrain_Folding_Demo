@@ -26,5 +26,14 @@
     <ClInclude Include="src\globals.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\vec.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\terrain.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\oscillator.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

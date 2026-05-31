@@ -1,10 +1,11 @@
 #pragma once
-#include <complex>
+
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <concepts>
 
 namespace td {
-
-    template<typename T>
-    concept numeric<T> = std::floating_point<T> || std::integral<T>;
 
     template<auto epsilon, typename T = decltype(epsilon)>
         requires (std::floating_point<T>)
@@ -43,5 +44,24 @@ namespace td {
         return FloatAbsComparison(a, b, abs_epsilon) ||
                FloatRelComparison(a, b, rel_epsilon);
     }
-    
+
+    template<typename T>
+        requires (std::floating_point<T>)
+    inline T WrapPositiveClosed(T x, T const wrap) {
+        assert(wrap > static_cast<T>(0.0));
+
+        static T constexpr kWrapEps = static_cast<T>(16.0) * std::numeric_limits<T>::epsilon() * wrap;
+
+        x = std::fmod(x, wrap);
+
+        if (x < static_cast<T>(0.0)) {
+            x += wrap;
+        }
+
+        if (std::abs(x) < kWrapEps) {
+            x = wrap;
+        }
+
+        return x;
+    }
 }

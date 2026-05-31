@@ -129,7 +129,10 @@
     <ClCompile Include="src\utils.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\oscillator.h" />
     <ClInclude Include="src\globals.h" />
+    <ClInclude Include="src\vec.h" />
+    <ClInclude Include="src\terrain.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
