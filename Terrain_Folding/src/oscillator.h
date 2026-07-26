@@ -25,11 +25,17 @@ namespace td {
             InitPortals();
         }
 
+        T GetNextSample() {
+            AdvanceVoices();
+        }
+
     private:
         // ############################## Voices ##############################
 
         using v_id_t = uint8_t;
         static v_id_t constexpr kMaxVoices = 32;
+        using p_id_t = uint8_t;
+        using c_id_t = uint8_t;
 
     public:
         void ActivateVoice() {
@@ -107,7 +113,7 @@ namespace td {
             }
         }
 
-        void Advance(v_id_t const v_id, T const angular_inc) {
+        void AdvanceVoice(v_id_t const v_id, T const angular_inc) {
             assert(v_id < kMaxVoices);
 
             auto &pos = voice_pos_[v_id];
@@ -125,12 +131,12 @@ namespace td {
                     auto [c_id, dist] = FindNextIntersection(v_id);
 
                     if (dist < angular_inc) {
-                        Advance(v_id, dist);
+                        AdvanceVoice(v_id, dist);
                         angular_inc -= dist;
 
                         Teleport(v_id, c_id);
                     } else {
-                        Advance(v_id, angular_inc);
+                        AdvanceVoice(v_id, angular_inc);
                         angular_inc = static_cast<T>(0.0);
                     }
                 }
@@ -139,15 +145,14 @@ namespace td {
 
         std::array<Vec3<T>, kMaxVoices> voice_pos_{};
         std::array<Vec3<T>, kMaxVoices> voice_dir_{};
+        std::array<c_id_t, kMaxVoices> voice_next_circ_{};
+        std::array<T, kMaxVoices> voice_dist_to_circ_{};
         std::array<T, kMaxVoices> voice_freq_{};
         v_id_t active_voices_ = 0;
 
         mutable std::array<T, kMaxVoices> voice_angular_inc_{};
         
         // ############################## Portals #############################
-
-        using p_id_t = uint8_t;
-        using c_id_t = uint8_t;
 
         static p_id_t constexpr kMaxPortals = 1 << 6; // this keeps c_ids from loosing portal id_bits
         static c_id_t constexpr kMaxCircles = static_cast<c_id_t>(2) * kMaxPortals;
@@ -185,7 +190,8 @@ namespace td {
         void SetPortalRotation(p_id_t const p_id, T const rot) {
             assert(p_id < kMaxPortals);
 
-            portal_rotation_[p_id] = rot;
+            portal_rot_cos_[p_id] = std::cos(rot);
+            portal_rot_sin_[p_id] = std::sin(rot);
         }
 
         void SetCircleAxis(c_id_t const c_id, Vec3<T> axis) {
@@ -212,6 +218,7 @@ namespace td {
                 circle_cut_depth_[i << 1 | 0] = static_cast<T>(0.5);
                 circle_cut_depth_[i << 1 | 1] = static_cast<T>(0.5);
 
+                SetPortalRotation(i, 0.0);
                 CalculateUvs(i);
             }
         }
@@ -300,8 +307,9 @@ namespace td {
 
             assert(IsPortalActive(p_id));
 
-            auto rotation = portal_rotation_[p_id];
-            if (src_id & 1) { rotation *= static_cast<T>(-1.0); }
+            auto rot_cos = portal_rot_cos_[p_id];
+            auto rot_sin = portal_rot_sin_[p_id];
+            if (src_id & 1) { rot_sin *= static_cast<T>(-1.0); }
 
             auto const &portal_u = portal_u_[p_id];
             auto const &src_v = circle_v_[src_id];
@@ -317,8 +325,8 @@ namespace td {
             auto const src_tangent_u = pos.Cross(circle_axis_[src_id]).Norm();
             auto const src_tangent_v = pos.Cross(src_tangent_u);
 
-            auto const rotated_portal_u = (std::cos(rotation) * portal_u - std::sin(rotation) * dst_v);
-            auto const rotated_portal_v = (std::sin(rotation) * portal_u + std::cos(rotation) * dst_v);
+            auto const rotated_portal_u = (rot_cos * portal_u - rot_sin * dst_v);
+            auto const rotated_portal_v = (rot_sin * portal_u + rot_cos * dst_v);
 
             pos = dst_cut_depth * circle_axis_[dst_id] +
                   std::sqrt(dst_radius_sq / src_radius_sq) * 
@@ -336,7 +344,8 @@ namespace td {
         }
 
         std::array<p_id_t, kMaxPortals> portals_{};
-        std::array<T, kMaxPortals> portal_rotation_{};
+        std::array<T, kMaxPortals> portal_rot_cos_{};
+        std::array<T, kMaxPortals> portal_rot_sin_{};
         p_id_t active_portals_{ 0 };
 
         mutable std::array<Vec3<T>, kMaxPortals> portal_u_{};

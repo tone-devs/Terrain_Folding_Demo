@@ -1,4 +1,4 @@
-#include "utils.h"
+#include "oscillator.h"
 
 //template<template<typename... Ts> typename C, typename... Ts>
 //class Soa {
@@ -30,5 +30,6 @@
 //};
 
 int main() {
-    
+    td::Oscillator<double> osc{};
+    osc.GetNextSample();
 }

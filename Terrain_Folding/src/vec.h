@@ -79,7 +79,7 @@ namespace td {
             Vec result{};
 
             for (size_t i = 0; i < order; ++i) {
-                result[i] = *(this[i]) + o[i];
+                result[i] = (*this)[i] + o[i];
             }
 
             return result;
@@ -130,7 +130,7 @@ namespace td {
 
         [[nodiscard]] bool IsUnit() const {
             static T constexpr kUnitEps = static_cast<T>(64.0) * std::numeric_limits<T>::epsilon();
-            return FloatComparison<kUnitEps, kUnitEps>(Magsq(), static_cast<T>(1.0));
+            return FloatComparison<kUnitEps, kUnitEps>(MagSq(), static_cast<T>(1.0));
         }
 
         std::array<T, order> elems{};

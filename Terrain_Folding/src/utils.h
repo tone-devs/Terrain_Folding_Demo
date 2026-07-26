@@ -50,7 +50,7 @@ namespace td {
     inline T WrapPositiveClosed(T x, T const wrap) {
         assert(wrap > static_cast<T>(0.0));
 
-        static T constexpr kWrapEps = static_cast<T>(16.0) * std::numeric_limits<T>::epsilon() * wrap;
+        static T constexpr kWrapEps = static_cast<T>(16.0) * std::numeric_limits<T>::epsilon();
 
         x = std::fmod(x, wrap);
 
@@ -58,10 +58,11 @@ namespace td {
             x += wrap;
         }
 
-        if (std::abs(x) < kWrapEps) {
+        if (std::abs(x) < kWrapEps * wrap) {
             x = wrap;
         }
 
         return x;
     }
+
 }
