@@ -5,6 +5,8 @@
 #include <cmath>
 #include <concepts>
 
+#include "globals.h"
+
 namespace td {
 
     template<auto epsilon, typename T = decltype(epsilon)>
@@ -50,15 +52,13 @@ namespace td {
     inline T WrapPositiveClosed(T x, T const wrap) {
         assert(wrap > static_cast<T>(0.0));
 
-        static T constexpr kWrapEps = static_cast<T>(16.0) * std::numeric_limits<T>::epsilon();
-
         x = std::fmod(x, wrap);
 
         if (x < static_cast<T>(0.0)) {
             x += wrap;
         }
 
-        if (std::abs(x) < kWrapEps * wrap) {
+        if (std::abs(x) < kWrapEps<T> * wrap) {
             x = wrap;
         }
 

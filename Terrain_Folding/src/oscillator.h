@@ -27,15 +27,23 @@ namespace td {
 
         T GetNextSample() {
             AdvanceVoices();
+
+            T acc{};
+            for (v_id_t v_id = 0; v_id < active_voices_; ++v_id) {
+                acc += terrain_.ReadPos(voice_pos_[v_id]);
+            }
+
+            return acc;
         }
 
     private:
         // ############################## Voices ##############################
 
         using v_id_t = uint8_t;
-        static v_id_t constexpr kMaxVoices = 32;
         using p_id_t = uint8_t;
         using c_id_t = uint8_t;
+
+        static v_id_t constexpr kMaxVoices = 32;
 
     public:
         void ActivateVoice() {
@@ -44,7 +52,7 @@ namespace td {
             }
         }
 
-        void ActivateVoice(Vec3<T> const pos, Vec2<T> const dir, T const freq) {
+        void ActivateVoice(Vec3<T> const &pos, Vec2<T> const &dir, T const freq) {
             if (active_voices_ < kMaxVoices) {
                 SetVoicePos(active_voices_, pos);
                 SetVoiceDir(active_voices_, dir);
@@ -59,19 +67,28 @@ namespace td {
             }
         }
 
-        void SetVoicePos(v_id_t const v_id, Vec3<T> const pos) {
+        void SetVoicePos(v_id_t const v_id, Vec3<T> const &new_pos) {
             assert(v_id < kMaxVoices);
-            assert(pos.IsUnit());
+            assert(new_pos.IsUnit());
 
-            voice_pos_[v_id] = pos.Norm();
+            Vec3<T> &current_pos = voice_pos_[v_id];
+            Vec3<T> &current_dir = voice_dir_[v_id];
+
+            auto const [old_u, old_v] = CalculateVoiceUvs(current_pos);
+            T u_heading = current_dir * old_u;
+            T v_heading = current_dir * old_v;
+
+            current_pos = new_pos.Norm();
+
+            auto const [new_u, new_v] = CalculateVoiceUvs(new_pos);
+
+            current_dir = (u_heading * new_u + v_heading * new_v).Norm();
+
+            RecalculateVoiceCacheForVoice(v_id);
         }
 
-        void SetVoiceDir(v_id_t const v_id, Vec2<T> const new_dir) {
+        void SetVoiceDir(v_id_t const v_id, Vec2<T> const &new_dir) {
             assert(v_id < kMaxVoices);
-
-            static T constexpr kMinAngle = static_cast<T>(1e-6);
-            static T constexpr kCosEps = static_cast<T>(0.5) * kMinAngle * kMinAngle;
-
             assert(new_dir.IsUnit());
 
             auto &pos = voice_pos_[v_id];
@@ -79,22 +96,13 @@ namespace td {
 
             assert(pos.IsUnit());
 
-            Vec3<T> seed_vec;
-            if (FloatAbsComparison<kCosEps,T>(pos.Z(), static_cast<T>(1.0))) {
-                seed_vec = {0.0, 1.0, 0.0};
-            } else if (FloatAbsComparison<kCosEps,T>(pos.Z(), static_cast<T>(-1.0))) {
-                seed_vec = {0.0, -1.0, 0.0};
-            } else {
-                seed_vec = {0.0, 0.0, 1.0};
-            }
-
-            Vec3<T> pos_tangent_u = seed_vec.Cross(pos).Norm();
-            Vec3<T> pos_tangent_v = pos.Cross(pos_tangent_u).Norm();
-
-            dir = new_dir.X() * pos_tangent_u + new_dir.Y() * pos_tangent_v;
+            auto const [u, v] = CalculateVoiceUvs(pos);
+            dir = new_dir.X() * u + new_dir.Y() * v;
 
             // sanitize orthonormal
             dir = (dir - (dir * pos) * pos).Norm();
+
+            RecalculateVoiceCacheForVoice(v_id);
         }
 
         void SetVoiceFreq(v_id_t const v_id, T const freq) {
@@ -105,11 +113,31 @@ namespace td {
         }
 
     private:
+        struct Uv { Vec3<T> u, v; };
+
+        static Uv CalculateVoiceUvs(Vec3<T> const &pos) {
+            Vec3<T> u = Vec3<T>{0.0, 0.0, 1.0}.Cross(pos);
+
+            if (u.MagSq() <= kParallelEps<T>) {
+                Vec3<T> u_fallback = {1.0, 0.0, 0.0};
+                u = (u_fallback - (u_fallback * pos) * pos).Norm();
+            } else {
+                u = u.Norm();
+            }
+
+            Vec3<T> v = pos.Cross(u).Norm();
+
+            return { .u = u, .v = v };
+        }
+
         void InitVoices() {
             for (v_id_t id = 0; id < kMaxVoices; ++id) {
                 voice_pos_[id] = {1.0, 0.0, 0.0};
                 voice_dir_[id] = {0.0, 0.0, 1.0};
                 SetVoiceFreq(id, static_cast<T>(440.0));
+                
+                voice_next_circ_[id] = kInvalidCircle;
+                voice_dist_to_circ_[id] = std::numeric_limits<T>::infinity();
             }
         }
 
@@ -126,31 +154,61 @@ namespace td {
 
         void AdvanceVoices() {
             for (v_id_t v_id = 0; v_id < active_voices_; ++v_id) {
-                for (T angular_inc = voice_angular_inc_[v_id];
-                     angular_inc > static_cast<T>(0.0);) {
-                    auto [c_id, dist] = FindNextIntersection(v_id);
+                T angular_inc = voice_angular_inc_[v_id];
+                c_id_t next_circ = voice_next_circ_[v_id];
+                T dist_to_circ = voice_dist_to_circ_[v_id];
 
-                    if (dist < angular_inc) {
-                        AdvanceVoice(v_id, dist);
-                        angular_inc -= dist;
-
-                        Teleport(v_id, c_id);
-                    } else {
+                while (angular_inc > static_cast<T>(0.0)) {
+                    if (dist_to_circ > angular_inc) {
                         AdvanceVoice(v_id, angular_inc);
+                        dist_to_circ -= angular_inc;
                         angular_inc = static_cast<T>(0.0);
+                    } else {
+                        AdvanceVoice(v_id, dist_to_circ);
+                        angular_inc -= dist_to_circ;
+
+                        Teleport(v_id, next_circ);
+
+                        std::tie(next_circ, dist_to_circ) = FindNextIntersection(v_id);
                     }
+                }
+
+                voice_next_circ_[v_id] = next_circ;
+                voice_dist_to_circ_[v_id] = dist_to_circ;
+            }
+        }
+        
+        void RecalculateVoiceCacheForVoice(v_id_t const v_id) const {
+            std::tie(voice_next_circ_[v_id], voice_dist_to_circ_[v_id]) = FindNextIntersection(v_id);
+        }
+
+        void RecalculateVoiceCacheForNewCircle(c_id_t const c_id) const {
+            for (v_id_t v_id = 0; v_id < kMaxVoices; ++v_id) {
+                T const dist = Intersect(v_id, c_id);
+
+                if (dist < voice_dist_to_circ_[v_id]) {
+                    voice_next_circ_[v_id] = c_id;
+                    voice_dist_to_circ_[v_id] = dist;
+                }
+            }
+        }
+
+        void RecalculateVoiceCacheForRemovedCircle(c_id_t const c_id) const {
+            for (v_id_t v_id = 0; v_id < kMaxVoices; ++v_id) {
+                if (voice_next_circ_[v_id] == c_id) {
+                    std::tie(voice_next_circ_[v_id], voice_dist_to_circ_[v_id]) = FindNextIntersection(v_id);
                 }
             }
         }
 
         std::array<Vec3<T>, kMaxVoices> voice_pos_{};
         std::array<Vec3<T>, kMaxVoices> voice_dir_{};
-        std::array<c_id_t, kMaxVoices> voice_next_circ_{};
-        std::array<T, kMaxVoices> voice_dist_to_circ_{};
         std::array<T, kMaxVoices> voice_freq_{};
         v_id_t active_voices_ = 0;
 
         mutable std::array<T, kMaxVoices> voice_angular_inc_{};
+        mutable std::array<c_id_t, kMaxVoices> voice_next_circ_{};
+        mutable std::array<T, kMaxVoices> voice_dist_to_circ_{};
         
         // ############################## Portals #############################
 
@@ -174,6 +232,8 @@ namespace td {
             assert(p_id < kMaxPortals);
 
             portals_[active_portals_++] = p_id;
+            RecalculateVoiceCacheForNewCircle(p_id << 1 | 0);
+            RecalculateVoiceCacheForNewCircle(p_id << 1 | 1);
         }
 
         void DeactivatePortal(p_id_t const p_id) {
@@ -185,6 +245,9 @@ namespace td {
                     std::swap(portals_[i], portals_[--active_portals_]);
                 }
             }
+
+            RecalculateVoiceCacheForRemovedCircle(p_id << 1 | 0);
+            RecalculateVoiceCacheForRemovedCircle(p_id << 1 | 1);
         }
 
         void SetPortalRotation(p_id_t const p_id, T const rot) {
@@ -199,7 +262,12 @@ namespace td {
             assert(axis.IsUnit());
 
             circle_axis_[c_id] = axis.Norm();
-            CalculateUvs(c_id >> 1);
+            CalculateCircleUvs(c_id >> 1);
+            
+            if (IsPortalActive(c_id >> 1)) {
+                RecalculateVoiceCacheForRemovedCircle(c_id);
+                RecalculateVoiceCacheForNewCircle(c_id);
+            }
         }
 
         void SetCircleCutDepth(c_id_t const c_id, T cut_depth) {
@@ -207,26 +275,28 @@ namespace td {
             assert(std::abs(cut_depth) < static_cast<T>(0.99));
 
             circle_cut_depth_[c_id] = cut_depth;
+
+            if (IsPortalActive(c_id >> 1)) {
+                RecalculateVoiceCacheForRemovedCircle(c_id);
+                RecalculateVoiceCacheForNewCircle(c_id);
+            }
         }
 
     private:
         void InitPortals() {
-            for (p_id_t i = 0; i < kMaxPortals; ++i) {
-                circle_axis_[i << 1 | 0] = {1.0, 0.0, 0.0};
-                circle_axis_[i << 1 | 1] = {0.0, 1.0, 0.0};
+            for (p_id_t p_id = 0; p_id < kMaxPortals; ++p_id) {
+                circle_axis_[p_id << 1 | 0] = {1.0, 0.0, 0.0};
+                circle_axis_[p_id << 1 | 1] = {0.0, 1.0, 0.0};
 
-                circle_cut_depth_[i << 1 | 0] = static_cast<T>(0.5);
-                circle_cut_depth_[i << 1 | 1] = static_cast<T>(0.5);
+                circle_cut_depth_[p_id << 1 | 0] = static_cast<T>(0.5);
+                circle_cut_depth_[p_id << 1 | 1] = static_cast<T>(0.5);
 
-                SetPortalRotation(i, 0.0);
-                CalculateUvs(i);
+                SetPortalRotation(p_id, 0.0);
+                CalculateCircleUvs(p_id);
             }
         }
 
-        void CalculateUvs(p_id_t const p_id) const {
-            static T constexpr kMinAngle = static_cast<T>(1e-6);
-            static T constexpr kParallelEps = kMinAngle * kMinAngle;
-
+        void CalculateCircleUvs(p_id_t const p_id) const {
             assert(p_id < kMaxPortals);
 
             c_id_t a_c_id = p_id << 1 | 0;
@@ -235,7 +305,7 @@ namespace td {
             auto c1_axis = circle_axis_[a_c_id];
             auto c2_axis = circle_axis_[b_c_id];
 
-            if (auto new_u = c1_axis.Cross(c2_axis); new_u.MagSq() > kParallelEps) {
+            if (auto new_u = c1_axis.Cross(c2_axis); new_u.MagSq() > kParallelEps<T>) {
                 portal_u_[p_id] = new_u.Norm();
             }
 
@@ -244,9 +314,6 @@ namespace td {
         }
 
         [[nodiscard]] T Intersect(v_id_t v_id, c_id_t c_id) const {
-            static T constexpr kOrthEps = static_cast<T>(64.0) * std::numeric_limits<T>::epsilon();
-            static T constexpr kR2Eps = static_cast<T>(64.0) * std::numeric_limits<T>::epsilon();
-
             assert(v_id < kMaxVoices);
             assert(c_id < kMaxCircles);
 
@@ -255,14 +322,14 @@ namespace td {
 
             assert(pos.IsUnit());
             assert(dir.IsUnit());
-            assert(std::abs(pos * dir) < kOrthEps);
+            assert(std::abs(pos * dir) < kOrthEps<T>);
 
             Vec3<T> const centre = circle_axis_[c_id];
             T const a = centre * pos;
             T const b = centre * dir;
             T const r_2 = a * a + b * b;
 
-            if (r_2 <= kR2Eps) {
+            if (r_2 <= kR2Eps<T>) {
                 return std::numeric_limits<T>::max();
             }
 
