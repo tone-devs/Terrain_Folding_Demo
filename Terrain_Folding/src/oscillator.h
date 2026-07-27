@@ -110,6 +110,8 @@ namespace td {
 
             voice_freq_[v_id] = freq;
             voice_angular_inc_[v_id] = static_cast<T>(2.0) * std::numbers::pi_v<T> * freq / kSampleRate;
+            voice_step_cos_[v_id] = std::cos(voice_angular_inc_[v_id]);
+            voice_step_sin_[v_id] = std::sin(voice_angular_inc_[v_id]);
         }
 
     private:
@@ -141,16 +143,30 @@ namespace td {
             }
         }
 
+        void AdvanceVoice(v_id_t const v_id) {
+            assert(v_id < kMaxVoices);
+
+            auto &pos = voice_pos_[v_id];
+            auto &dir = voice_dir_[v_id];
+
+            auto new_pos = voice_step_cos_[v_id] * pos + voice_step_sin_[v_id] * dir;
+            dir = voice_step_cos_[v_id] * dir - voice_step_sin_[v_id] * pos;
+            pos = new_pos;
+        } 
+
         void AdvanceVoice(v_id_t const v_id, T const angular_inc) {
             assert(v_id < kMaxVoices);
 
             auto &pos = voice_pos_[v_id];
             auto &dir = voice_dir_[v_id];
 
-            auto new_pos = std::cos(angular_inc) * pos + std::sin(angular_inc) * dir;
-            dir = std::cos(angular_inc) * dir - std::sin(angular_inc) * pos;
+            T const c = std::cos(angular_inc);
+            T const s = std::sin(angular_inc);
+
+            auto new_pos = c * pos + s * dir;
+            dir = c * dir - s * pos;
             pos = new_pos;
-        } 
+        }
 
         void AdvanceVoices() {
             for (v_id_t v_id = 0; v_id < active_voices_; ++v_id) {
@@ -158,23 +174,33 @@ namespace td {
                 c_id_t next_circ = voice_next_circ_[v_id];
                 T dist_to_circ = voice_dist_to_circ_[v_id];
 
-                while (angular_inc > static_cast<T>(0.0)) {
-                    if (dist_to_circ > angular_inc) {
-                        AdvanceVoice(v_id, angular_inc);
-                        dist_to_circ -= angular_inc;
-                        angular_inc = static_cast<T>(0.0);
-                    } else {
-                        AdvanceVoice(v_id, dist_to_circ);
-                        angular_inc -= dist_to_circ;
-
-                        Teleport(v_id, next_circ);
-
-                        std::tie(next_circ, dist_to_circ) = FindNextIntersection(v_id);
-                    }
+                if (dist_to_circ > angular_inc) {
+                    AdvanceVoice(v_id);
+                    dist_to_circ -= angular_inc;
+                    angular_inc = static_cast<T>(0.0);
+                } else {
+                    HandlePortalCrossing(v_id, angular_inc, next_circ, dist_to_circ);
                 }
 
                 voice_next_circ_[v_id] = next_circ;
                 voice_dist_to_circ_[v_id] = dist_to_circ;
+            }
+        }
+
+        void HandlePortalCrossing(v_id_t const v_id, T angular_inc, c_id_t &next_circ, T &dist_to_circ) {
+            while (angular_inc > static_cast<T>(0.0)) {
+                if (dist_to_circ > angular_inc) {
+                    AdvanceVoice(v_id, angular_inc);
+                    dist_to_circ -= angular_inc;
+                    angular_inc = static_cast<T>(0.0);
+                } else {
+                    AdvanceVoice(v_id, dist_to_circ);
+                    angular_inc -= dist_to_circ;
+
+                    Teleport(v_id, next_circ);
+
+                    std::tie(next_circ, dist_to_circ) = FindNextIntersection(v_id);
+                }
             }
         }
         
@@ -209,6 +235,8 @@ namespace td {
         mutable std::array<T, kMaxVoices> voice_angular_inc_{};
         mutable std::array<c_id_t, kMaxVoices> voice_next_circ_{};
         mutable std::array<T, kMaxVoices> voice_dist_to_circ_{};
+        mutable std::array<T, kMaxVoices> voice_step_sin_{};
+        mutable std::array<T, kMaxVoices> voice_step_cos_{};
         
         // ############################## Portals #############################
 
@@ -302,8 +330,8 @@ namespace td {
             c_id_t a_c_id = p_id << 1 | 0;
             c_id_t b_c_id = p_id << 1 | 1;
             
-            auto c1_axis = circle_axis_[a_c_id];
-            auto c2_axis = circle_axis_[b_c_id];
+            auto const c1_axis = circle_axis_[a_c_id];
+            auto const c2_axis = circle_axis_[b_c_id];
 
             if (auto new_u = c1_axis.Cross(c2_axis); new_u.MagSq() > kParallelEps<T>) {
                 portal_u_[p_id] = new_u.Norm();
