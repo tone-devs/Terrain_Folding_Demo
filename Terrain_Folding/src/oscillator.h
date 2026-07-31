@@ -7,6 +7,7 @@
 #include <concepts>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <numbers>
 #include <tuple>
 
@@ -19,10 +20,13 @@ namespace td {
     template<typename T>
         requires (std::floating_point<T>)
     class Oscillator {
+    private:
+        static constexpr size_t kTextureResolution = (1ull << 12);
     public:
         Oscillator() {
             InitVoices();
             InitPortals();
+            terrain_ = std::make_unique<Terrain<T, kTextureResolution>>();
         }
 
         T GetNextSample() {
@@ -30,7 +34,7 @@ namespace td {
 
             T acc{};
             for (v_id_t v_id = 0; v_id < active_voices_; ++v_id) {
-                acc += terrain_.ReadPos(voice_pos_[v_id]);
+                acc += terrain_->ReadPos(voice_pos_[v_id]);
             }
 
             return acc;
@@ -109,7 +113,7 @@ namespace td {
             assert(v_id < kMaxVoices);
 
             voice_freq_[v_id] = freq;
-            voice_angular_inc_[v_id] = static_cast<T>(2.0) * std::numbers::pi_v<T> * freq / kSampleRate;
+            voice_angular_inc_[v_id] = T{ 2.0 } * std::numbers::pi_v<T> *freq / kSampleRate;
             voice_step_cos_[v_id] = std::cos(voice_angular_inc_[v_id]);
             voice_step_sin_[v_id] = std::sin(voice_angular_inc_[v_id]);
         }
@@ -136,7 +140,7 @@ namespace td {
             for (v_id_t id = 0; id < kMaxVoices; ++id) {
                 voice_pos_[id] = {1.0, 0.0, 0.0};
                 voice_dir_[id] = {0.0, 0.0, 1.0};
-                SetVoiceFreq(id, static_cast<T>(440.0));
+                SetVoiceFreq(id, T{ 440.0 });
                 
                 voice_next_circ_[id] = kInvalidCircle;
                 voice_dist_to_circ_[id] = std::numeric_limits<T>::infinity();
@@ -177,7 +181,7 @@ namespace td {
                 if (dist_to_circ > angular_inc) {
                     AdvanceVoice(v_id);
                     dist_to_circ -= angular_inc;
-                    angular_inc = static_cast<T>(0.0);
+                    angular_inc = T{ 0.0 };
                 } else {
                     HandlePortalCrossing(v_id, angular_inc, next_circ, dist_to_circ);
                 }
@@ -188,11 +192,11 @@ namespace td {
         }
 
         void HandlePortalCrossing(v_id_t const v_id, T angular_inc, c_id_t &next_circ, T &dist_to_circ) {
-            while (angular_inc > static_cast<T>(0.0)) {
+            while (angular_inc > T{ 0.0 }) {
                 if (dist_to_circ > angular_inc) {
                     AdvanceVoice(v_id, angular_inc);
                     dist_to_circ -= angular_inc;
-                    angular_inc = static_cast<T>(0.0);
+                    angular_inc = T{ 0.0 };
                 } else {
                     AdvanceVoice(v_id, dist_to_circ);
                     angular_inc -= dist_to_circ;
@@ -241,7 +245,7 @@ namespace td {
         // ############################## Portals #############################
 
         static p_id_t constexpr kMaxPortals = 1 << 6; // this keeps c_ids from loosing portal id_bits
-        static c_id_t constexpr kMaxCircles = static_cast<c_id_t>(2) * kMaxPortals;
+        static c_id_t constexpr kMaxCircles = c_id_t{ 2 } * kMaxPortals;
         static c_id_t constexpr kInvalidCircle = std::numeric_limits<c_id_t>::max();
 
     public:
@@ -300,7 +304,7 @@ namespace td {
 
         void SetCircleCutDepth(c_id_t const c_id, T cut_depth) {
             assert(c_id < kMaxCircles);
-            assert(std::abs(cut_depth) < static_cast<T>(0.99));
+            assert(std::abs(cut_depth) < T{ 0.99 });
 
             circle_cut_depth_[c_id] = cut_depth;
 
@@ -316,8 +320,8 @@ namespace td {
                 circle_axis_[p_id << 1 | 0] = {1.0, 0.0, 0.0};
                 circle_axis_[p_id << 1 | 1] = {0.0, 1.0, 0.0};
 
-                circle_cut_depth_[p_id << 1 | 0] = static_cast<T>(0.5);
-                circle_cut_depth_[p_id << 1 | 1] = static_cast<T>(0.5);
+                circle_cut_depth_[p_id << 1 | 0] = T{ 0.5 };
+                circle_cut_depth_[p_id << 1 | 1] = T{ 0.5 };
 
                 SetPortalRotation(p_id, 0.0);
                 CalculateCircleUvs(p_id);
@@ -363,12 +367,12 @@ namespace td {
 
             T const normed_cut = -circle_cut_depth_[c_id] / std::sqrt(r_2);
 
-            if (std::abs(normed_cut) > static_cast<T>(1.0)) {
+            if (std::abs(normed_cut) > T{ 1.0 }) {
                 return std::numeric_limits<T>::max();
             }
 
-            auto intersection_1 = WrapPositiveClosed(std::atan2(b, a) + std::acos(normed_cut), static_cast<T>(2.0) * std::numbers::pi_v<T>);
-            auto intersection_2 = WrapPositiveClosed(std::atan2(b, a) - std::acos(normed_cut), static_cast<T>(2.0) * std::numbers::pi_v<T>);
+            auto intersection_1 = WrapPositiveClosed(std::atan2(b, a) + std::acos(normed_cut), T{ 2.0 } * std::numbers::pi_v<T>);
+            auto intersection_2 = WrapPositiveClosed(std::atan2(b, a) - std::acos(normed_cut), T{ 2.0 } * std::numbers::pi_v<T>);
 
             return std::min(intersection_1, intersection_2);
         }
@@ -404,15 +408,15 @@ namespace td {
 
             auto rot_cos = portal_rot_cos_[p_id];
             auto rot_sin = portal_rot_sin_[p_id];
-            if (src_id & 1) { rot_sin *= static_cast<T>(-1.0); }
+            if (src_id & 1) { rot_sin *= T{ -1.0 }; }
 
             auto const &portal_u = portal_u_[p_id];
             auto const &src_v = circle_v_[src_id];
             auto const &dst_v = circle_v_[dst_id];
             auto const src_cut_depth = circle_cut_depth_[src_id];
-            auto const src_radius_sq = static_cast<T>(1.0) - src_cut_depth * src_cut_depth;
+            auto const src_radius_sq = T{ 1.0 } - src_cut_depth * src_cut_depth;
             auto const dst_cut_depth = circle_cut_depth_[dst_id];
-            auto const dst_radius_sq = static_cast<T>(1.0) - dst_cut_depth * dst_cut_depth;
+            auto const dst_radius_sq = T{ 1.0 } - dst_cut_depth * dst_cut_depth;
 
             auto &pos = voice_pos_[v_id];
             auto &dir = voice_dir_[v_id];
@@ -452,7 +456,7 @@ namespace td {
 
         // ############################## Terrain #############################
 
-        Terrain<T> terrain_;
+        std::unique_ptr<Terrain<T, kTextureResolution>> terrain_;
     };
     
 }
