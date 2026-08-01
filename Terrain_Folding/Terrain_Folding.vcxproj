@@ -103,6 +103,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)dependencies;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -126,13 +127,18 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\terrain.cpp" />
     <ClCompile Include="src\utils.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="dependencies\stb_image.h" />
     <ClInclude Include="src\oscillator.h" />
     <ClInclude Include="src\globals.h" />
     <ClInclude Include="src\vec.h" />
     <ClInclude Include="src\terrain.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="assets\World_elevation_map2-octahedral.png" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -23,10 +23,10 @@ namespace td {
     private:
         static constexpr size_t kTextureResolution = (1ull << 12);
     public:
-        Oscillator() {
+        explicit Oscillator(std::filesystem::path const &terrain_file) {
             InitVoices();
             InitPortals();
-            terrain_ = std::make_unique<Terrain<T, kTextureResolution>>();
+            LoadTerrain(terrain_file);
         }
 
         T GetNextSample() {
@@ -455,6 +455,10 @@ namespace td {
         mutable std::array<Vec3<T>, kMaxCircles> circle_v_{};
 
         // ############################## Terrain #############################
+
+        void LoadTerrain(std::filesystem::path const &path) {
+            terrain_ = std::make_unique<Terrain<T, kTextureResolution>>(path);
+        }
 
         std::unique_ptr<Terrain<T, kTextureResolution>> terrain_;
     };

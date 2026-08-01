@@ -29,7 +29,7 @@
 //    size_t capacity_{ 0 };
 //};
 
-int main() {
-    td::Oscillator<double> osc{};
+int main(int argc, char **argv) {
+    td::Oscillator<double> osc{argv[1]};
     osc.GetNextSample();
 }
