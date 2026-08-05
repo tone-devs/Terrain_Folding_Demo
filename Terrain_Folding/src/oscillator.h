@@ -22,6 +22,7 @@ namespace td {
     class Oscillator {
     private:
         static constexpr size_t kTextureResolution = (1ull << 12);
+        static constexpr size_t kBlockSize = 256;
     public:
         explicit Oscillator(std::filesystem::path const &terrain_file) {
             InitVoices();
@@ -29,13 +30,33 @@ namespace td {
             LoadTerrain(terrain_file);
         }
 
-        T GetNextSample() {
-            AdvanceVoices();
+        void GetNextBlock(std::array<std::array<T, kBlockSize>, 2> &block) {
+            for (size_t i = 0; i < 2; ++i) {
+                block[i].fill(T{});
+            }
 
+            std::array<std::array<T, kMaxVoices>, kBlockSize> voices_block;
+            for (size_t i = 0; i < kBlockSize; ++i) {
+                voices_block[i] = GetVoicesSamples();
+                AdvanceVoices();
+            }
+
+            for (size_t i = 0; i < 2; ++i) {
+                for (size_t j = 0; j < kBlockSize; ++j) {
+                    for (size_t k = 0; k < active_voices_; ++k) {
+                        block[i][j] += voices_block[j][k] * voice_amp_[i][k];
+                    }
+                }
+            }
+        }
+
+        [[nodiscard]] T GetNextSample() {
             T acc{};
             for (v_id_t v_id = 0; v_id < active_voices_; ++v_id) {
                 acc += terrain_->ReadPos(voice_pos_[v_id]);
             }
+
+            AdvanceVoices();
 
             return acc;
         }
@@ -118,6 +139,14 @@ namespace td {
             voice_step_sin_[v_id] = std::sin(voice_angular_inc_[v_id]);
         }
 
+        void SetVoicePan(v_id_t const v_id, T const pan) {
+            assert(v_id < kMaxVoices);
+            assert(pan >= T{ 0.0 } && pan <= T{ 1.0 });
+            voice_pan_[v_id] = pan;
+            voice_amp_[0][v_id] = cos(T{ 0.5 } * std::numbers::pi_v<T> * pan);
+            voice_amp_[1][v_id] = sin(T{ 0.5 } * std::numbers::pi_v<T> * pan);
+        }
+
     private:
         struct Uv { Vec3<T> u, v; };
 
@@ -141,10 +170,19 @@ namespace td {
                 voice_pos_[id] = {1.0, 0.0, 0.0};
                 voice_dir_[id] = {0.0, 0.0, 1.0};
                 SetVoiceFreq(id, T{ 440.0 });
+                SetVoicePan(id, T{ 0.5 });
                 
                 voice_next_circ_[id] = kInvalidCircle;
                 voice_dist_to_circ_[id] = std::numeric_limits<T>::infinity();
             }
+        }
+
+        [[nodiscard]] std::array<T, kMaxVoices> GetVoicesSamples() const {
+            std::array<T, kMaxVoices> samples;
+            for (size_t i = 0; i < active_voices_; ++i) {
+                samples[i] = terrain_->ReadPos(voice_pos_[i]);
+            }
+            return samples;
         }
 
         void AdvanceVoice(v_id_t const v_id) {
@@ -234,6 +272,7 @@ namespace td {
         std::array<Vec3<T>, kMaxVoices> voice_pos_{};
         std::array<Vec3<T>, kMaxVoices> voice_dir_{};
         std::array<T, kMaxVoices> voice_freq_{};
+        std::array<T, kMaxVoices> voice_pan_{};
         v_id_t active_voices_ = 0;
 
         mutable std::array<T, kMaxVoices> voice_angular_inc_{};
@@ -241,6 +280,7 @@ namespace td {
         mutable std::array<T, kMaxVoices> voice_dist_to_circ_{};
         mutable std::array<T, kMaxVoices> voice_step_sin_{};
         mutable std::array<T, kMaxVoices> voice_step_cos_{};
+        mutable std::array<std::array<T, kMaxVoices>, 2> voice_amp_{};
         
         // ############################## Portals #############################
 
