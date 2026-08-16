@@ -35,7 +35,7 @@ namespace td {
                 block[i].fill(T{});
             }
 
-            std::array<std::array<T, kMaxVoices>, kBlockSize> voices_block;
+            std::array<std::array<T, kMaxVoices>, kBlockSize> voices_block{};
             for (size_t i = 0; i < kBlockSize; ++i) {
                 voices_block[i] = GetVoicesSamples();
                 AdvanceVoices();
@@ -178,7 +178,7 @@ namespace td {
         }
 
         [[nodiscard]] std::array<T, kMaxVoices> GetVoicesSamples() const {
-            std::array<T, kMaxVoices> samples;
+            std::array<T, kMaxVoices> samples{};
             for (size_t i = 0; i < active_voices_; ++i) {
                 samples[i] = terrain_->ReadPos(voice_pos_[i]);
             }
