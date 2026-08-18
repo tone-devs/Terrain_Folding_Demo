@@ -7,6 +7,7 @@
 #include <concepts>
 #include <cstdint>
 #include <limits>
+#include <mutex>
 #include <numbers>
 #include <tuple>
 
@@ -29,6 +30,8 @@ namespace td {
         }
 
         void GetNextBlock(std::array<std::array<float, kBlockSize>, 2> &block) {
+            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
+
             for (size_t i = 0; i < 2; ++i) {
                 block[i].fill(0.0f);
             }
@@ -49,6 +52,7 @@ namespace td {
         }
 
         [[nodiscard]] float GetNextSample() {
+            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
             float acc{};
             for (v_id_t v_id = 0; v_id < active_voices_; ++v_id) {
                 acc += terrain_.ReadPos(voice_pos_[v_id]);
@@ -70,12 +74,16 @@ namespace td {
 
     public:
         void ActivateVoice() {
+            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
+
             if (active_voices_ < kMaxVoices) {
                 ++active_voices_;
             }
         }
 
         void ActivateVoice(Vec3<T> const &pos, Vec2<T> const &dir, T const freq) {
+            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
+
             if (active_voices_ < kMaxVoices) {
                 SetVoicePos(active_voices_, pos);
                 SetVoiceDir(active_voices_, dir);
@@ -85,6 +93,8 @@ namespace td {
         }
 
         void DeactivateVoice() {
+            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
+
             if (active_voices_ != 0) {
                 --active_voices_;
             }
@@ -93,6 +103,8 @@ namespace td {
         void SetVoicePos(v_id_t const v_id, Vec3<T> const &new_pos) {
             assert(v_id < kMaxVoices);
             assert(new_pos.IsUnit());
+
+            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
 
             Vec3<T> &current_pos = voice_pos_[v_id];
             Vec3<T> &current_dir = voice_dir_[v_id];
@@ -114,6 +126,8 @@ namespace td {
             assert(v_id < kMaxVoices);
             assert(new_dir.IsUnit());
 
+            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
+
             auto &pos = voice_pos_[v_id];
             auto &dir = voice_dir_[v_id];
 
@@ -132,6 +146,8 @@ namespace td {
             assert(v_id < kMaxVoices);
             assert(freq >= 0.0f && freq < kSampleRate / 2);
 
+            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
+
             voice_freq_[v_id] = freq;
             voice_angular_inc_[v_id] = T{ 2.0 } * std::numbers::pi_v<T> *freq / kSampleRate;
             voice_step_cos_[v_id] = std::cos(voice_angular_inc_[v_id]);
@@ -141,6 +157,9 @@ namespace td {
         void SetVoicePan(v_id_t const v_id, float const pan) {
             assert(v_id < kMaxVoices);
             assert(pan >= 0.0f && pan <= 1.0f);
+
+            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
+
             voice_pan_[v_id] = pan;
             voice_amp_[0][v_id] = std::cos(0.5f * std::numbers::pi_v<float> * pan);
             voice_amp_[1][v_id] = std::sin(0.5f * std::numbers::pi_v<float> * pan);
@@ -291,6 +310,8 @@ namespace td {
         bool IsPortalActive(p_id_t const p_id) const {
             assert(p_id < kMaxPortals);
 
+            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
+
             for (size_t i = 0; i < active_portals_; ++i) {
                 if (portals_[i] == p_id) { return true; }
             }
@@ -302,6 +323,8 @@ namespace td {
             assert(!IsPortalActive(p_id));
             assert(p_id < kMaxPortals);
 
+            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
+
             portals_[active_portals_++] = p_id;
             RecalculateVoiceCacheForNewCircle(p_id << 1 | 0);
             RecalculateVoiceCacheForNewCircle(p_id << 1 | 1);
@@ -310,6 +333,8 @@ namespace td {
         void DeactivatePortal(p_id_t const p_id) {
             assert(IsPortalActive(p_id));
             assert(p_id < kMaxPortals);
+
+            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
 
             for (size_t i = 0; i < active_portals_; ++i) {
                 if (portals_[i] == p_id) {
@@ -324,6 +349,8 @@ namespace td {
         void SetPortalRotation(p_id_t const p_id, T const rot) {
             assert(p_id < kMaxPortals);
 
+            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
+
             portal_rot_cos_[p_id] = std::cos(rot);
             portal_rot_sin_[p_id] = std::sin(rot);
         }
@@ -331,6 +358,8 @@ namespace td {
         void SetCircleAxis(c_id_t const c_id, Vec3<T> axis) {
             assert(c_id < kMaxCircles);
             assert(axis.IsUnit());
+
+            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
 
             circle_axis_[c_id] = axis.Norm();
             CalculateCircleUvs(c_id >> 1);
@@ -344,6 +373,8 @@ namespace td {
         void SetCircleCutDepth(c_id_t const c_id, T cut_depth) {
             assert(c_id < kMaxCircles);
             assert(std::abs(cut_depth) < T{ 0.99 });
+
+            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
 
             circle_cut_depth_[c_id] = cut_depth;
 
@@ -497,11 +528,18 @@ namespace td {
 
     public:
         void LoadTerrain(std::filesystem::path const &path) {
+            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
+
             terrain_ = Terrain<float, kTextureResolution>{ path };
         }
 
     private:
         Terrain<float, kTextureResolution> terrain_;
+
+        // ############################## Threading ###########################
+
+    private:
+        std::recursive_mutex mutex_;
     };
     
 }
