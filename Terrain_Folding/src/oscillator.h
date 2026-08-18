@@ -310,8 +310,6 @@ namespace td {
         bool IsPortalActive(p_id_t const p_id) const {
             assert(p_id < kMaxPortals);
 
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
-
             for (size_t i = 0; i < active_portals_; ++i) {
                 if (portals_[i] == p_id) { return true; }
             }
