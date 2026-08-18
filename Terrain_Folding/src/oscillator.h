@@ -539,7 +539,7 @@ namespace td {
         // ############################## Threading ###########################
 
     private:
-        std::recursive_mutex mutex_;
+        mutable std::recursive_mutex mutex_;
     };
     
 }
