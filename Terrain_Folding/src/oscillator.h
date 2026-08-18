@@ -7,7 +7,6 @@
 #include <concepts>
 #include <cstdint>
 #include <limits>
-#include <memory>
 #include <numbers>
 #include <tuple>
 
@@ -24,18 +23,17 @@ namespace td {
         static constexpr size_t kTextureResolution = (1ull << 12);
         static constexpr size_t kBlockSize = 256;
     public:
-        explicit Oscillator(std::filesystem::path const &terrain_file) {
+        explicit Oscillator(std::filesystem::path const &terrain_file) : terrain_{ terrain_file } {
             InitVoices();
             InitPortals();
-            LoadTerrain(terrain_file);
         }
 
-        void GetNextBlock(std::array<std::array<T, kBlockSize>, 2> &block) {
+        void GetNextBlock(std::array<std::array<float, kBlockSize>, 2> &block) {
             for (size_t i = 0; i < 2; ++i) {
-                block[i].fill(T{});
+                block[i].fill(0.0f);
             }
 
-            std::array<std::array<T, kMaxVoices>, kBlockSize> voices_block{};
+            std::array<std::array<float, kMaxVoices>, kBlockSize> voices_block{};
             for (size_t i = 0; i < kBlockSize; ++i) {
                 voices_block[i] = GetVoicesSamples();
                 AdvanceVoices();
@@ -50,10 +48,10 @@ namespace td {
             }
         }
 
-        [[nodiscard]] T GetNextSample() {
-            T acc{};
+        [[nodiscard]] float GetNextSample() {
+            float acc{};
             for (v_id_t v_id = 0; v_id < active_voices_; ++v_id) {
-                acc += terrain_->ReadPos(voice_pos_[v_id]);
+                acc += terrain_.ReadPos(voice_pos_[v_id]);
             }
 
             AdvanceVoices();
@@ -132,6 +130,7 @@ namespace td {
 
         void SetVoiceFreq(v_id_t const v_id, T const freq) {
             assert(v_id < kMaxVoices);
+            assert(freq >= 0.0f && freq < kSampleRate / 2);
 
             voice_freq_[v_id] = freq;
             voice_angular_inc_[v_id] = T{ 2.0 } * std::numbers::pi_v<T> *freq / kSampleRate;
@@ -139,12 +138,12 @@ namespace td {
             voice_step_sin_[v_id] = std::sin(voice_angular_inc_[v_id]);
         }
 
-        void SetVoicePan(v_id_t const v_id, T const pan) {
+        void SetVoicePan(v_id_t const v_id, float const pan) {
             assert(v_id < kMaxVoices);
-            assert(pan >= T{ 0.0 } && pan <= T{ 1.0 });
+            assert(pan >= 0.0f && pan <= 1.0f);
             voice_pan_[v_id] = pan;
-            voice_amp_[0][v_id] = cos(T{ 0.5 } * std::numbers::pi_v<T> * pan);
-            voice_amp_[1][v_id] = sin(T{ 0.5 } * std::numbers::pi_v<T> * pan);
+            voice_amp_[0][v_id] = std::cos(0.5f * std::numbers::pi_v<float> * pan);
+            voice_amp_[1][v_id] = std::sin(0.5f * std::numbers::pi_v<float> * pan);
         }
 
     private:
@@ -170,17 +169,17 @@ namespace td {
                 voice_pos_[id] = {1.0, 0.0, 0.0};
                 voice_dir_[id] = {0.0, 0.0, 1.0};
                 SetVoiceFreq(id, T{ 440.0 });
-                SetVoicePan(id, T{ 0.5 });
+                SetVoicePan(id, 0.5f);
                 
                 voice_next_circ_[id] = kInvalidCircle;
                 voice_dist_to_circ_[id] = std::numeric_limits<T>::infinity();
             }
         }
 
-        [[nodiscard]] std::array<T, kMaxVoices> GetVoicesSamples() const {
-            std::array<T, kMaxVoices> samples{};
+        [[nodiscard]] std::array<float, kMaxVoices> GetVoicesSamples() const {
+            std::array<float, kMaxVoices> samples{};
             for (size_t i = 0; i < active_voices_; ++i) {
-                samples[i] = terrain_->ReadPos(voice_pos_[i]);
+                samples[i] = terrain_.ReadPos(voice_pos_[i]);
             }
             return samples;
         }
@@ -272,7 +271,7 @@ namespace td {
         std::array<Vec3<T>, kMaxVoices> voice_pos_{};
         std::array<Vec3<T>, kMaxVoices> voice_dir_{};
         std::array<T, kMaxVoices> voice_freq_{};
-        std::array<T, kMaxVoices> voice_pan_{};
+        std::array<float, kMaxVoices> voice_pan_{};
         v_id_t active_voices_ = 0;
 
         mutable std::array<T, kMaxVoices> voice_angular_inc_{};
@@ -280,7 +279,7 @@ namespace td {
         mutable std::array<T, kMaxVoices> voice_dist_to_circ_{};
         mutable std::array<T, kMaxVoices> voice_step_sin_{};
         mutable std::array<T, kMaxVoices> voice_step_cos_{};
-        mutable std::array<std::array<T, kMaxVoices>, 2> voice_amp_{};
+        mutable std::array<std::array<float, kMaxVoices>, 2> voice_amp_{};
         
         // ############################## Portals #############################
 
@@ -405,7 +404,7 @@ namespace td {
                 return std::numeric_limits<T>::max();
             }
 
-            T const normed_cut = -circle_cut_depth_[c_id] / std::sqrt(r_2);
+            T const normed_cut = circle_cut_depth_[c_id] / std::sqrt(r_2);
 
             if (std::abs(normed_cut) > T{ 1.0 }) {
                 return std::numeric_limits<T>::max();
@@ -496,11 +495,13 @@ namespace td {
 
         // ############################## Terrain #############################
 
+    public:
         void LoadTerrain(std::filesystem::path const &path) {
-            terrain_ = std::make_unique<Terrain<T, kTextureResolution>>(path);
+            terrain_ = Terrain<float, kTextureResolution>{ path };
         }
 
-        std::unique_ptr<Terrain<T, kTextureResolution>> terrain_;
+    private:
+        Terrain<float, kTextureResolution> terrain_;
     };
     
 }

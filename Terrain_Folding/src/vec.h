@@ -9,63 +9,89 @@ namespace td {
         requires (order >= 1)
     struct Vec {
     public:
-        [[nodiscard]] T &X() {
+        constexpr Vec() = default;
+
+        template<typename... Ts>
+            requires(sizeof...(Ts) == order && (std::is_convertible_v<Ts, T> && ...))
+        constexpr Vec(Ts&&... args) : elems{ static_cast<T>(std::forward<Ts>(args))... } {}
+
+        template<size_t order_a>
+        constexpr Vec(Vec<T, order_a> const& a, Vec<T, order - order_a> const& b) {
+            static_assert(order_a < order, "First vector order must be less than total order");
+            for (size_t i = 0; i < order_a; ++i) {
+                elems[i] = a[i];
+            }
+            for (size_t i = 0; i < order - order_a; ++i) {
+                elems[order_a + i] = b[i];
+            }
+        }
+
+        template<size_t source_order>
+            requires(source_order + 1 == order)
+        constexpr Vec(Vec<T, source_order> const &a, T const &b) {
+            for (size_t i = 0; i < source_order; ++i) {
+                elems[i] = a[i];
+            }
+            elems[order - 1] = b;
+        }
+
+        [[nodiscard]] constexpr T &X() {
             return elems[0];
         }
 
-        [[nodiscard]] T X() const {
+        [[nodiscard]] constexpr T X() const {
             return elems[0];
         }
 
-        [[nodiscard]] T &Y()
+        [[nodiscard]] constexpr T &Y()
             requires (order >= 2) {
             return elems[1];
         }
 
-        [[nodiscard]] T Y() const
+        [[nodiscard]] constexpr T Y() const
             requires (order >= 2) {
             return elems[1];
         }
 
-        [[nodiscard]] T &Z()
+        [[nodiscard]] constexpr T &Z()
             requires (order >= 3) {
             return elems[2];
         }
 
-        [[nodiscard]] T Z() const
+        [[nodiscard]] constexpr T Z() const
             requires (order >= 3) {
             return elems[2];
         }
 
-        [[nodiscard]] T &W()
+        [[nodiscard]] constexpr T &W()
             requires (order >= 4) {
             return elems[3];
         }
 
-        [[nodiscard]] T W() const
+        [[nodiscard]] constexpr T W() const
             requires (order >= 4) {
             return elems[3];
         }
 
-        [[nodiscard]] Vec<T, 2> XY() const
+        [[nodiscard]] constexpr Vec<T, 2> XY() const
             requires (order >= 2) {
             return { X(), Y() };
         }
 
-        [[nodiscard]] Vec<T, 2> YX() const
+        [[nodiscard]] constexpr Vec<T, 2> YX() const
             requires (order >= 2) {
             return { Y(), X() };
         }
 
-        [[nodiscard]] T MagSq() const {
+        [[nodiscard]] constexpr T MagSq() const {
             return *this * *this;
         }
 
-        [[nodiscard]] T Mag() const {
+        [[nodiscard]] constexpr T Mag() const {
             return std::sqrt(MagSq());
         }
 
-        [[nodiscard]] T L1() const {
+        [[nodiscard]] constexpr T L1() const {
             T acc{};
             
             for (T const &elem : elems) {
@@ -75,17 +101,17 @@ namespace td {
             return acc;
         }
 
-        [[nodiscard]] T &operator[](size_t const &i) {
+        [[nodiscard]] constexpr T &operator[](size_t const &i) {
             assert(i < order);
             return elems[i];
         }
 
-        [[nodiscard]] T operator[](size_t const &i) const {
+        [[nodiscard]] constexpr T operator[](size_t const &i) const {
             assert(i < order);
             return elems[i];
         }
 
-        [[nodiscard]] Vec operator-() const {
+        [[nodiscard]] constexpr Vec operator-() const {
             Vec result{};
 
             for (size_t i = 0; i < order; ++i) {
@@ -95,7 +121,7 @@ namespace td {
             return result;
         }
 
-        [[nodiscard]] Vec operator+(Vec const &o) const {
+        [[nodiscard]] constexpr Vec operator+(Vec const &o) const {
             Vec result{};
 
             for (size_t i = 0; i < order; ++i) {
@@ -105,7 +131,7 @@ namespace td {
             return result;
         }
 
-        [[nodiscard]] Vec operator+(T const &x) const {
+        [[nodiscard]] constexpr Vec operator+(T const &x) const {
             Vec result{};
 
             for (size_t i = 0; i < order; ++i) {
@@ -115,11 +141,15 @@ namespace td {
             return result;
         }
 
-        [[nodiscard]] Vec operator-(Vec const &o) const {
+        [[nodiscard]] constexpr Vec operator-(Vec const &o) const {
             return *this + -o;
         }
 
-        [[nodiscard]] friend Vec operator-(T const x, Vec const &v) {
+        [[nodiscard]] constexpr Vec operator-(T const &x) const {
+            return *this + -x;
+        }
+
+        [[nodiscard]] friend constexpr Vec operator-(T const x, Vec const &v) {
             Vec result{};
 
             for (size_t i = 0; i < order; ++i) {
@@ -129,7 +159,7 @@ namespace td {
             return result;
         }
 
-        [[nodiscard]] T operator*(Vec const &o) const {
+        [[nodiscard]] constexpr T operator*(Vec const &o) const {
             T acc{};
 
             for (size_t i = 0; i < order; ++i) {
@@ -139,8 +169,8 @@ namespace td {
             return acc;
         }
 
-        [[nodiscard]] Vec HadamardProd(Vec const &o) const {
-            Vec result;
+        [[nodiscard]] constexpr Vec HadamardProd(Vec const &o) const {
+            Vec result{};
 
             for (size_t i = 0; i < order; ++i) {
                 result[i] = elems[i] * o[i];
@@ -149,7 +179,7 @@ namespace td {
             return result;
         }
 
-        [[nodiscard]] Vec operator*(T const &scalar) const {
+        [[nodiscard]] constexpr Vec operator*(T const &scalar) const {
             Vec result{};
 
             for (size_t i = 0; i < order; ++i) {
@@ -159,31 +189,31 @@ namespace td {
             return result;
         }
 
-        [[nodiscard]] friend Vec operator*(T const &scalar, Vec const &vec) {
+        [[nodiscard]] friend constexpr Vec operator*(T const &scalar, Vec const &vec) {
             return vec * scalar;
         }
 
-        [[nodiscard]] Vec operator/(T const &scalar) const {
+        [[nodiscard]] constexpr Vec operator/(T const &scalar) const {
             return *this * (T{ 1.0 } / scalar);
         }
 
-        Vec Cross(Vec const &o) const
-            requires (order == 3 || order == 7) {
+        [[nodiscard]] constexpr Vec Cross(Vec const &o) const
+            requires (order == 3/* || order == 7*/) {
             return { elems[1] * o[2] - elems[2] * o[1],
                      elems[2] * o[0] - elems[0] * o[2],
                      elems[0] * o[1] - elems[1] * o[0] };
         }
 
-        Vec Norm() const {
+        [[nodiscard]] constexpr Vec Norm() const {
             return *this / Mag();
         }
 
-        [[nodiscard]] bool IsUnit() const {
+        [[nodiscard]] constexpr bool IsUnit() const {
             static T constexpr kUnitEps = T{ 64.0 } * std::numeric_limits<T>::epsilon();
             return FloatComparison<kUnitEps, kUnitEps>(MagSq(), T{ 1.0 });
         }
 
-        [[nodiscard]] Vec Sign() const {
+        [[nodiscard]] constexpr Vec Sign() const {
             Vec result{};
 
             for (size_t i = 0; i < order; ++i) {
@@ -193,7 +223,7 @@ namespace td {
             return result;
         }
 
-        [[nodiscard]] Vec Abs() const {
+        [[nodiscard]] constexpr Vec Abs() const {
             Vec result{};
 
             for (size_t i = 0; i < order; ++i) {
@@ -218,7 +248,7 @@ namespace td {
 
     template<typename T>
         requires (std::floating_point<T>)
-    [[nodiscard]] Vec2<T> OctahedralEncode(Vec3<T> const &vec) {
+    [[nodiscard]] constexpr Vec2<T> OctahedralEncode(Vec3<T> const &vec) {
         Vec2<T> normed_vec = vec.XY() / vec.L1();
         if (vec.Z() >= T{ 0.0 }) {
             return normed_vec;
