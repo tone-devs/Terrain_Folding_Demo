@@ -5,7 +5,7 @@
 #include <cmath>
 #include <concepts>
 
-#include "globals.h"
+#include "globals.hpp"
 
 namespace td {
 

@@ -133,14 +133,15 @@
   <ItemGroup>
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\terrain.cpp" />
-    <ClCompile Include="src\utils.h" />
+    <ClCompile Include="src\utils.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="dependencies\stb_image.h" />
-    <ClInclude Include="src\oscillator.h" />
-    <ClInclude Include="src\globals.h" />
-    <ClInclude Include="src\vec.h" />
-    <ClInclude Include="src\terrain.h" />
+    <ClInclude Include="src\triple_buffer.hpp" />
+    <ClInclude Include="src\oscillator.hpp" />
+    <ClInclude Include="src\globals.hpp" />
+    <ClInclude Include="src\vec.hpp" />
+    <ClInclude Include="src\terrain.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

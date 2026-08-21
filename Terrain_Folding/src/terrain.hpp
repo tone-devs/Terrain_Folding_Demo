@@ -13,7 +13,7 @@
 #include <string>
 
 #include"stb_image.h"
-#include"vec.h"
+#include"vec.hpp"
 
 namespace td {
 

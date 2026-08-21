@@ -1,7 +1,7 @@
 #pragma once
 
-#include "globals.h"
-#include"utils.h"
+#include "globals.hpp"
+#include"utils.hpp"
 
 namespace td {
 

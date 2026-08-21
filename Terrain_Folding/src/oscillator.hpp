@@ -2,27 +2,30 @@
 
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <cassert>
 #include <cmath>
 #include <concepts>
 #include <cstdint>
 #include <limits>
-#include <mutex>
 #include <numbers>
 #include <tuple>
 
-#include "globals.h"
-#include "terrain.h"
-#include "vec.h"
+#include "globals.hpp"
+#include "terrain.hpp"
+#include "triple_buffer.hpp"
+#include "vec.hpp"
 
 namespace td {
+
+    static_assert(std::atomic_uint8_t::is_always_lock_free);
 
     template<typename T>
         requires (std::floating_point<T>)
     class Oscillator {
     private:
         static constexpr size_t kTextureResolution = (1ull << 12);
-        static constexpr size_t kBlockSize = 256;
+
     public:
         explicit Oscillator(std::filesystem::path const &terrain_file) : terrain_{ terrain_file } {
             InitVoices();
@@ -30,7 +33,9 @@ namespace td {
         }
 
         void GetNextBlock(std::array<std::array<float, kBlockSize>, 2> &block) {
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
+            CollectVoiceChanges();
+            ApplyVoiceDeactivations();
+            ApplyActiveVoiceChanges();
 
             for (size_t i = 0; i < 2; ++i) {
                 block[i].fill(0.0f);
@@ -51,63 +56,175 @@ namespace td {
             }
         }
 
-        [[nodiscard]] float GetNextSample() {
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
-            float acc{};
-            for (v_id_t v_id = 0; v_id < active_voices_; ++v_id) {
-                acc += terrain_.ReadPos(voice_pos_[v_id]);
-            }
-
-            AdvanceVoices();
-
-            return acc;
-        }
-
     private:
         // ############################## Voices ##############################
 
         using v_id_t = uint8_t;
         using p_id_t = uint8_t;
         using c_id_t = uint8_t;
+        using v_gen_t = uint64_t;
 
         static v_id_t constexpr kMaxVoices = 32;
+        static v_id_t constexpr kInvalidVoice = std::numeric_limits<v_id_t>::max();
+
+        struct VoiceHandle {
+            v_gen_t gen;
+            v_id_t v_id;
+        };
+
+        struct VoiceParamPack {
+            Vec3<T> pos;
+            Vec2<T> dir;
+            T freq;
+            float gain;
+            float pan;
+        };
+
+        struct VoiceParamGenerations {
+            v_gen_t pos{};
+            v_gen_t dir{};
+            v_gen_t freq{};
+            v_gen_t gain{};
+            v_gen_t pan{};
+        };
+
+        struct VoiceState {
+            v_gen_t gen{};
+            VoiceParamGenerations param_gens;
+        };
+
+        struct VoicePendingState {
+            v_gen_t gen{};
+            bool active{};
+            VoiceParamPack params;
+            VoiceParamGenerations param_gens;
+        };
 
     public:
-        void ActivateVoice() {
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
-
-            if (active_voices_ < kMaxVoices) {
-                ++active_voices_;
+        [[nodiscard]] std::optional<VoiceHandle> ActivateVoice(VoiceParamPack params) noexcept {
+            auto &[pos, dir, freq, gain, pan] = params;
+            if (!pos.IsUnit() ||
+                !dir.IsUnit() ||
+                freq < T{ 0.0 } || freq >= T{ kSampleRate / 2.0 } || !std::isfinite(freq) ||
+                gain < T{ 0.0 } || !std::isfinite(gain) ||
+                pan < T{ 0.0 } || pan > T{ 1.0 } || !std::isfinite(pan)) {
+                return std::nullopt;
             }
+
+            pos = pos.Norm();
+            dir = dir.Norm();
+
+            for (v_id_t v_id = 0; v_id < kMaxVoices; ++v_id) {
+                auto &pending_state = voice_pending_states_control_[v_id];
+                if (pending_state.active) {
+                    continue;
+                }
+
+                IncGen(pending_state.gen);
+                pending_state.active = true;
+                pending_state.params = params;
+                IncParamGens(pending_state.param_gens);
+
+                voice_state_buffers_[v_id].Publish(pending_state);
+
+                return { VoiceHandle{ .gen = pending_state.gen, .v_id = v_id } };
+            } 
+            return std::nullopt;
         }
 
-        void ActivateVoice(Vec3<T> const &pos, Vec2<T> const &dir, T const freq) {
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
-
-            if (active_voices_ < kMaxVoices) {
-                SetVoicePos(active_voices_, pos);
-                SetVoiceDir(active_voices_, dir);
-                SetVoiceFreq(active_voices_, freq);
-                ++active_voices_;
+        [[nodiscard]] bool DeactivateVoice(VoiceHandle const &handle) noexcept {
+            if (!IsVoiceActive(handle)) {
+                return false;
             }
+
+            auto &current_pending = voice_pending_states_control_[handle.v_id];
+            current_pending.active = false;
+
+            voice_state_buffers_[handle.v_id].Publish(current_pending);
+
+            return true;
         }
 
-        void DeactivateVoice() {
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
-
-            if (active_voices_ != 0) {
-                --active_voices_;
+        [[nodiscard]] bool SetVoicePos(VoiceHandle const &handle, Vec3<T> const &pos) noexcept {
+            if (!IsVoiceActive(handle) || !pos.IsUnit()) {
+                return false;
             }
+
+            auto &current_pending = voice_pending_states_control_[handle.v_id];
+            current_pending.params.pos = pos;
+            IncGen(current_pending.param_gens.pos);
+
+            voice_state_buffers_[handle.v_id].Publish(current_pending);
+
+            return true;
         }
 
-        void SetVoicePos(v_id_t const v_id, Vec3<T> const &new_pos) {
-            assert(v_id < kMaxVoices);
+        [[nodiscard]] bool SetVoiceDir(VoiceHandle const &handle, Vec2<T> const &dir) noexcept {
+            if (!IsVoiceActive(handle) || !dir.IsUnit()) {
+                return false;
+            }
+
+            auto &current_pending = voice_pending_states_control_[handle.v_id];
+            current_pending.params.dir = dir;
+            IncGen(current_pending.param_gens.dir);
+
+            voice_state_buffers_[handle.v_id].Publish(current_pending);
+
+            return true;
+        }
+
+        [[nodiscard]] bool SetVoiceFreq(VoiceHandle const &handle, T const &freq) noexcept {
+            if (!IsVoiceActive(handle) || 
+                freq < T{ 0.0 } || freq >= T{ kSampleRate / 2.0 } || !std::isfinite(freq)) {
+                return false;
+            }
+
+            auto &current_pending = voice_pending_states_control_[handle.v_id];
+            current_pending.params.freq = freq;
+            IncGen(current_pending.param_gens.freq);
+
+            voice_state_buffers_[handle.v_id].Publish(current_pending);
+
+            return true;
+        }
+
+        [[nodiscard]] bool SetVoiceGain(VoiceHandle const &handle, float const &gain) noexcept {
+            if (!IsVoiceActive(handle) || 
+                gain < 0.0f || !std::isfinite(gain)) {
+                return false;
+            }
+
+            auto &current_pending = voice_pending_states_control_[handle.v_id];
+            current_pending.params.gain = gain;
+            IncGen(current_pending.param_gens.gain);
+
+            voice_state_buffers_[handle.v_id].Publish(current_pending);
+
+            return true;
+        }
+
+        [[nodiscard]] bool SetVoicePan(VoiceHandle const &handle, float const &pan) noexcept {
+            if (!IsVoiceActive(handle) || 
+                pan < T{ 0.0 } || pan > 1.0f || !std::isfinite(pan)) {
+                return false;
+            }
+
+            auto &current_pending = voice_pending_states_control_[handle.v_id];
+            current_pending.params.pan = pan;
+            IncGen(current_pending.param_gens.pan);
+
+            voice_state_buffers_[handle.v_id].Publish(current_pending);
+
+            return true;
+        }
+
+    private:
+        void SetVoicePosInternal(v_id_t const lane, Vec3<T> const &new_pos) {
+            assert(lane < kMaxVoices);
             assert(new_pos.IsUnit());
 
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
-
-            Vec3<T> &current_pos = voice_pos_[v_id];
-            Vec3<T> &current_dir = voice_dir_[v_id];
+            Vec3<T> &current_pos = voice_pos_[lane];
+            Vec3<T> &current_dir = voice_dir_[lane];
 
             auto const [old_u, old_v] = CalculateVoiceUvs(current_pos);
             T u_heading = current_dir * old_u;
@@ -119,17 +236,15 @@ namespace td {
 
             current_dir = (u_heading * new_u + v_heading * new_v).Norm();
 
-            RecalculateVoiceCacheForVoice(v_id);
+            RecalculateVoiceCacheForVoice(lane);
         }
 
-        void SetVoiceDir(v_id_t const v_id, Vec2<T> const &new_dir) {
-            assert(v_id < kMaxVoices);
+        void SetVoiceDirInternal(v_id_t const lane, Vec2<T> const &new_dir) {
+            assert(lane < kMaxVoices);
             assert(new_dir.IsUnit());
 
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
-
-            auto &pos = voice_pos_[v_id];
-            auto &dir = voice_dir_[v_id];
+            auto &pos = voice_pos_[lane];
+            auto &dir = voice_dir_[lane];
 
             assert(pos.IsUnit());
 
@@ -139,33 +254,40 @@ namespace td {
             // sanitize orthonormal
             dir = (dir - (dir * pos) * pos).Norm();
 
-            RecalculateVoiceCacheForVoice(v_id);
+            RecalculateVoiceCacheForVoice(lane);
         }
 
-        void SetVoiceFreq(v_id_t const v_id, T const freq) {
-            assert(v_id < kMaxVoices);
-            assert(freq >= 0.0f && freq < kSampleRate / 2);
+        void SetVoiceFreqInternal(v_id_t const lane, T const freq) {
+            assert(lane < kMaxVoices);
+            assert(freq >= 0.0f && freq < kSampleRate / 2 && std::isfinite(freq));
 
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
-
-            voice_freq_[v_id] = freq;
-            voice_angular_inc_[v_id] = T{ 2.0 } * std::numbers::pi_v<T> *freq / kSampleRate;
-            voice_step_cos_[v_id] = std::cos(voice_angular_inc_[v_id]);
-            voice_step_sin_[v_id] = std::sin(voice_angular_inc_[v_id]);
+            voice_freq_[lane] = freq;
+            voice_angular_inc_[lane] = T{ 2.0 } * std::numbers::pi_v<T> *freq / kSampleRate;
+            voice_step_cos_[lane] = std::cos(voice_angular_inc_[lane]);
+            voice_step_sin_[lane] = std::sin(voice_angular_inc_[lane]);
         }
 
-        void SetVoicePan(v_id_t const v_id, float const pan) {
-            assert(v_id < kMaxVoices);
-            assert(pan >= 0.0f && pan <= 1.0f);
+        void SetVoiceGainInternal(v_id_t const lane, float const gain) {
+            assert(lane < kMaxVoices);
+            assert(gain >= 0.0f && std::isfinite(gain));
 
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
-
-            voice_pan_[v_id] = pan;
-            voice_amp_[0][v_id] = std::cos(0.5f * std::numbers::pi_v<float> * pan);
-            voice_amp_[1][v_id] = std::sin(0.5f * std::numbers::pi_v<float> * pan);
+            voice_gain_[lane] = gain;
+            CalculateAmp(lane);
         }
 
-    private:
+        void SetVoicePanInternal(v_id_t const lane, float const pan) {
+            assert(lane < kMaxVoices);
+            assert(pan >= 0.0f && pan <= 1.0f && std::isfinite(pan));
+
+            voice_pan_[lane] = pan;
+            CalculateAmp(lane);
+        }
+
+        void CalculateAmp(v_id_t const lane) const {
+            voice_amp_[0][lane] = voice_gain_[lane] * std::cos(0.5f * std::numbers::pi_v<float> * voice_pan_[lane]);
+            voice_amp_[1][lane] = voice_gain_[lane] * std::sin(0.5f * std::numbers::pi_v<float> * voice_pan_[lane]);
+        }
+
         struct Uv { Vec3<T> u, v; };
 
         static Uv CalculateVoiceUvs(Vec3<T> const &pos) {
@@ -183,15 +305,143 @@ namespace td {
             return { .u = u, .v = v };
         }
 
+        static void IncParamGens(VoiceParamGenerations &param_gens) noexcept {
+            IncGen(param_gens.pos);
+            IncGen(param_gens.dir);
+            IncGen(param_gens.freq);
+            IncGen(param_gens.gain);
+            IncGen(param_gens.pan);
+        }
+
+        static void IncGen(v_gen_t &gen) noexcept {
+            if (++gen == 0) { gen = 1; }
+        }
+
+        [[nodiscard]] bool IsVoiceActive(VoiceHandle const &handle) {
+            if (handle.v_id >= kMaxVoices || handle.gen == 0) {
+                return false;
+            }
+            
+            auto &pending_state = voice_pending_states_control_[handle.v_id];
+            return pending_state.active && handle.gen == pending_state.gen;
+        }
+
         void InitVoices() {
             for (v_id_t id = 0; id < kMaxVoices; ++id) {
                 voice_pos_[id] = {1.0, 0.0, 0.0};
                 voice_dir_[id] = {0.0, 0.0, 1.0};
-                SetVoiceFreq(id, T{ 440.0 });
-                SetVoicePan(id, 0.5f);
+                SetVoiceFreqInternal(id, T{ 440.0 });
+                SetVoicePanInternal(id, 0.5f);
                 
                 voice_next_circ_[id] = kInvalidCircle;
                 voice_dist_to_circ_[id] = std::numeric_limits<T>::infinity();
+            }
+
+            slot_to_lane_.fill(kInvalidVoice);
+            lane_to_slot_.fill(kInvalidVoice);
+        }
+
+        void CollectVoiceChanges() noexcept {
+            for (v_id_t v_id = 0; v_id < kMaxVoices; ++v_id) {
+                if (auto pending = voice_state_buffers_[v_id].Consume()) {
+                    voice_pending_states_audio_[v_id] = *pending;
+                    voice_pending_flags_[v_id] = true;
+                }
+            }
+        }
+
+        void ApplyVoiceDeactivations() noexcept {
+            for (v_id_t v_id = 0; v_id < kMaxVoices; ++v_id) {
+                if (!voice_pending_flags_[v_id] || voice_pending_states_audio_[v_id].active) {
+                    continue;
+                }
+
+                if (v_id_t const lane = slot_to_lane_[v_id]; lane != kInvalidVoice) {
+                    v_id_t last_lane = --active_voices_;
+                    if (lane != last_lane) {
+                        std::swap(voice_pos_[lane], voice_pos_[last_lane]);
+                        std::swap(voice_dir_[lane], voice_dir_[last_lane]);
+                        std::swap(voice_freq_[lane], voice_freq_[last_lane]);
+                        std::swap(voice_gain_[lane], voice_gain_[last_lane]);
+                        std::swap(voice_pan_[lane], voice_pan_[last_lane]);
+                        std::swap(voice_angular_inc_[lane], voice_angular_inc_[last_lane]);
+                        std::swap(voice_next_circ_[lane], voice_next_circ_[last_lane]);
+                        std::swap(voice_dist_to_circ_[lane], voice_dist_to_circ_[last_lane]);
+                        std::swap(voice_step_sin_[lane], voice_step_sin_[last_lane]);
+                        std::swap(voice_step_cos_[lane], voice_step_cos_[last_lane]);
+                        std::swap(voice_amp_[0][lane], voice_amp_[0][last_lane]);
+                        std::swap(voice_amp_[1][lane], voice_amp_[1][last_lane]);
+
+                        v_id_t moved_v_id = lane_to_slot_[last_lane];
+                        slot_to_lane_[moved_v_id] = lane;
+                        lane_to_slot_[lane] = moved_v_id;
+                    }
+
+                    lane_to_slot_[last_lane] = kInvalidVoice;
+                    slot_to_lane_[v_id] = kInvalidVoice;
+                }
+
+                auto &current_state = voice_state_[v_id];
+                auto &new_state = voice_pending_states_audio_[v_id];
+                current_state.gen = new_state.gen;
+                current_state.param_gens = new_state.param_gens;
+
+                voice_pending_flags_[v_id] = false;
+            }
+        }
+
+        void ApplyActiveVoiceChanges() {
+            for (v_id_t v_id = 0; v_id < kMaxVoices; ++v_id) {
+                if (!voice_pending_flags_[v_id]) {
+                    continue;
+                }
+
+                auto &pending = voice_pending_states_audio_[v_id];
+                auto &current = voice_state_[v_id];
+
+                v_id_t &lane = slot_to_lane_[v_id];
+                if (lane == kInvalidVoice || pending.gen != current.gen) {
+                    if (lane == kInvalidVoice) {
+                        assert(active_voices_ < kMaxVoices);
+
+                        lane = active_voices_++;
+                        lane_to_slot_[lane] = v_id;
+                    }
+
+                    SetVoicePosInternal(lane, pending.params.pos);
+                    SetVoiceDirInternal(lane, pending.params.dir);
+                    SetVoiceFreqInternal(lane, pending.params.freq);
+                    SetVoiceGainInternal(lane, pending.params.gain);
+                    SetVoicePanInternal(lane, pending.params.pan);
+
+                    current.gen = pending.gen;
+                } else {
+                    if (!pending.active) {
+                        continue;
+                    }
+
+                    if (pending.param_gens.pos != current.param_gens.pos) {
+                        SetVoicePosInternal(lane, pending.params.pos);
+                    }
+
+                    if (pending.param_gens.dir != current.param_gens.dir) {
+                        SetVoiceDirInternal(lane, pending.params.dir);
+                    }
+
+                    if (pending.param_gens.freq != current.param_gens.freq) {
+                        SetVoiceFreqInternal(lane, pending.params.freq);
+                    }
+
+                    if (pending.param_gens.gain != current.param_gens.gain) {
+                        SetVoiceGainInternal(lane, pending.params.gain);
+                    }
+
+                    if (pending.param_gens.pan != current.param_gens.pan) {
+                        SetVoicePanInternal(lane, pending.params.pan);
+                    }
+                }
+                current.param_gens = pending.param_gens;
+                voice_pending_flags_[v_id] = false;
             }
         }
 
@@ -287,12 +537,24 @@ namespace td {
             }
         }
 
+        // State
         std::array<Vec3<T>, kMaxVoices> voice_pos_{};
         std::array<Vec3<T>, kMaxVoices> voice_dir_{};
         std::array<T, kMaxVoices> voice_freq_{};
+        std::array<float, kMaxVoices> voice_gain_{};
         std::array<float, kMaxVoices> voice_pan_{};
         v_id_t active_voices_ = 0;
 
+        // Threading
+        std::array<VoicePendingState, kMaxVoices> voice_pending_states_control_{};
+        std::array<TripleBuffer<VoicePendingState>, kMaxVoices> voice_state_buffers_{};
+        std::array<VoicePendingState, kMaxVoices> voice_pending_states_audio_{};
+        std::bitset<kMaxVoices> voice_pending_flags_{};
+        std::array<VoiceState, kMaxVoices> voice_state_{};
+        std::array<v_id_t, kMaxVoices> slot_to_lane_{};
+        std::array<v_id_t, kMaxVoices> lane_to_slot_{};
+
+        // Caching
         mutable std::array<T, kMaxVoices> voice_angular_inc_{};
         mutable std::array<c_id_t, kMaxVoices> voice_next_circ_{};
         mutable std::array<T, kMaxVoices> voice_dist_to_circ_{};
@@ -310,8 +572,6 @@ namespace td {
         bool IsPortalActive(p_id_t const p_id) const {
             assert(p_id < kMaxPortals);
 
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
-
             for (size_t i = 0; i < active_portals_; ++i) {
                 if (portals_[i] == p_id) { return true; }
             }
@@ -319,47 +579,46 @@ namespace td {
             return false;
         }
 
-        void ActivatePortal(p_id_t const p_id) {
-            assert(!IsPortalActive(p_id));
-            assert(p_id < kMaxPortals);
-
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
+        bool ActivatePortalInternal(p_id_t const p_id) {
+            if (p_id >= kMaxPortals || active_portals_ >= kMaxPortals || IsPortalActive(p_id)) {
+                return false;
+            }
 
             portals_[active_portals_++] = p_id;
             RecalculateVoiceCacheForNewCircle(p_id << 1 | 0);
             RecalculateVoiceCacheForNewCircle(p_id << 1 | 1);
+            return true;
         }
 
-        void DeactivatePortal(p_id_t const p_id) {
-            assert(IsPortalActive(p_id));
-            assert(p_id < kMaxPortals);
-
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
+        bool DeactivatePortalInternal(p_id_t const p_id) {
+            if (p_id >= kMaxPortals) {
+                return false;
+            }
 
             for (size_t i = 0; i < active_portals_; ++i) {
                 if (portals_[i] == p_id) {
                     std::swap(portals_[i], portals_[--active_portals_]);
+
+                    RecalculateVoiceCacheForRemovedCircle(p_id << 1 | 0);
+                    RecalculateVoiceCacheForRemovedCircle(p_id << 1 | 1);
+
+                    return true;
                 }
             }
 
-            RecalculateVoiceCacheForRemovedCircle(p_id << 1 | 0);
-            RecalculateVoiceCacheForRemovedCircle(p_id << 1 | 1);
+            return false;
         }
 
-        void SetPortalRotation(p_id_t const p_id, T const rot) {
+        void SetPortalRotationInternal(p_id_t const p_id, T const rot) {
             assert(p_id < kMaxPortals);
-
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
 
             portal_rot_cos_[p_id] = std::cos(rot);
             portal_rot_sin_[p_id] = std::sin(rot);
         }
 
-        void SetCircleAxis(c_id_t const c_id, Vec3<T> axis) {
+        void SetCircleAxisInternal(c_id_t const c_id, Vec3<T> axis) {
             assert(c_id < kMaxCircles);
             assert(axis.IsUnit());
-
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
 
             circle_axis_[c_id] = axis.Norm();
             CalculateCircleUvs(c_id >> 1);
@@ -370,11 +629,9 @@ namespace td {
             }
         }
 
-        void SetCircleCutDepth(c_id_t const c_id, T cut_depth) {
+        void SetCircleCutDepthInternal(c_id_t const c_id, T cut_depth) {
             assert(c_id < kMaxCircles);
             assert(std::abs(cut_depth) < T{ 0.99 });
-
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
 
             circle_cut_depth_[c_id] = cut_depth;
 
@@ -393,7 +650,7 @@ namespace td {
                 circle_cut_depth_[p_id << 1 | 0] = T{ 0.5 };
                 circle_cut_depth_[p_id << 1 | 1] = T{ 0.5 };
 
-                SetPortalRotation(p_id, 0.0);
+                SetPortalRotationInternal(p_id, 0.0);
                 CalculateCircleUvs(p_id);
             }
         }
@@ -528,18 +785,13 @@ namespace td {
 
     public:
         void LoadTerrain(std::filesystem::path const &path) {
-            std::scoped_lock<std::recursive_mutex> lock{ mutex_ };
+            Terrain<float, kTextureResolution> new_terrain{ path };
 
-            terrain_ = Terrain<float, kTextureResolution>{ path };
+            std::swap(terrain_, new_terrain);
         }
 
     private:
         Terrain<float, kTextureResolution> terrain_;
-
-        // ############################## Threading ###########################
-
-    private:
-        mutable std::recursive_mutex mutex_;
     };
     
 }

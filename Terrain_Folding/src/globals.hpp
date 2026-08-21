@@ -4,7 +4,8 @@
 
 namespace td {
     
-    double constexpr kSampleRate = 48'000.0;
+    static double constexpr kSampleRate = 48'000.0;
+    static size_t constexpr kBlockSize = 256;
 
     template<typename T>
     static T constexpr kMinAngle = T{ 1e-6 };
