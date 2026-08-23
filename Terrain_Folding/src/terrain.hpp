@@ -29,7 +29,7 @@ namespace td {
 
     public:
         explicit Terrain(std::filesystem::path const &file) {
-            terrain_ = std::make_unique_for_overwrite<std::array<T, kStride * kStride * 4>>();
+            terrain_ = std::make_unique_for_overwrite<std::array<uint16_t, kStride * kStride * 4>>();
             LoadTexture(file);
         }
 
@@ -80,19 +80,15 @@ namespace td {
                         T const texture_x_f = x - static_cast<T>(x_0);
                         T const texture_y_f = y - static_cast<T>(y_0);
 
-                        auto scale = [](uint16_t const value) -> float {
-                                return 2.0f * static_cast<float>(value) / static_cast<float>(std::numeric_limits<stbi_us>::max()) - 1.0f;
-                            };
+                        T const p_0_0 = static_cast<T>(data[y_0 * static_cast<size_t>(width) + x_0]);
+                        T const p_0_1 = static_cast<T>(data[y_0 * static_cast<size_t>(width) + x_1]);
+                        T const p_1_0 = static_cast<T>(data[y_1 * static_cast<size_t>(width) + x_0]);
+                        T const p_1_1 = static_cast<T>(data[y_1 * static_cast<size_t>(width) + x_1]);
 
-                        float const p_0_0 = scale(data[y_0 * static_cast<size_t>(width) + x_0]);
-                        float const p_0_1 = scale(data[y_0 * static_cast<size_t>(width) + x_1]);
-                        float const p_1_0 = scale(data[y_1 * static_cast<size_t>(width) + x_0]);
-                        float const p_1_1 = scale(data[y_1 * static_cast<size_t>(width) + x_1]);
+                        T const p_0_x = p_0_0 * (1.0f - texture_x_f) + p_0_1 * texture_x_f;
+                        T const p_1_x = p_1_0 * (1.0f - texture_x_f) + p_1_1 * texture_x_f;
 
-                        float const p_0_x = p_0_0 * (1.0f - texture_x_f) + p_0_1 * texture_x_f;
-                        float const p_1_x = p_1_0 * (1.0f - texture_x_f) + p_1_1 * texture_x_f;
-
-                        (*terrain_)[(i * kStride + j) * kStride + k] = static_cast<T>(p_0_x * (1.0f - texture_y_f) + p_1_x * texture_y_f);
+                        (*terrain_)[(i * kStride + j) * kStride + k] = static_cast<uint16_t>(p_0_x * (1.0f - texture_y_f) + p_1_x * texture_y_f);
                     }
                 }
             }
@@ -103,6 +99,8 @@ namespace td {
         template<typename TP>
             requires (std::floating_point<TP>)
         T ReadPos(Vec3<TP> const &pos) const {
+            assert(pos.IsUnit());
+
             Vec2<TP> const patch_index_vec = (pos.XY().Sign() + TP{ 1.0 }) * TP{ 0.5 };
             size_t const patch_index = static_cast<size_t>(patch_index_vec.X() * TP{ 2.0 }) + static_cast<size_t>(patch_index_vec.Y());
 
@@ -117,20 +115,25 @@ namespace td {
 
             bool const upper_tri = (x_f + y_f) > T{ 1.0 };
 
+            auto scale = [](uint16_t const value) -> T {
+                return 2.0f * static_cast<T>(value) / static_cast<T>(std::numeric_limits<uint16_t>::max()) - 1.0f;
+            };
+
             T result;
             auto &terrain = *terrain_;
             if (upper_tri) {
-                T const v_1 = terrain[patch_index * kStride * kStride + (y_i + 1) * kStride + (x_i + 1)];
-                T const v_2 = terrain[patch_index * kStride * kStride + (y_i + 1) * kStride + x_i];
-                T const v_3 = terrain[patch_index * kStride * kStride + y_i * kStride + (x_i + 1)];
+
+                T const v_1 = scale(terrain[patch_index * kStride * kStride + (y_i + 1) * kStride + (x_i + 1)]);
+                T const v_2 = scale(terrain[patch_index * kStride * kStride + (y_i + 1) * kStride + x_i]);
+                T const v_3 = scale(terrain[patch_index * kStride * kStride + y_i * kStride + (x_i + 1)]);
 
                 result = v_1 * (x_f + y_f - T{ 1.0 }) +
                          v_2 * (T{ 1.0 } - x_f) +
                          v_3 * (T{ 1.0 } - y_f);
             } else {
-                T const v_1 = terrain[patch_index * kStride * kStride + y_i * kStride + x_i];
-                T const v_2 = terrain[patch_index * kStride * kStride + y_i * kStride + (x_i + 1)];
-                T const v_3 = terrain[patch_index * kStride * kStride + (y_i + 1) * kStride + x_i];
+                T const v_1 = scale(terrain[patch_index * kStride * kStride + y_i * kStride + x_i]);
+                T const v_2 = scale(terrain[patch_index * kStride * kStride + y_i * kStride + (x_i + 1)]);
+                T const v_3 = scale(terrain[patch_index * kStride * kStride + (y_i + 1) * kStride + x_i]);
 
                 result = v_1 * (T{ 1.0 } - x_f - y_f) +
                          v_2 * x_f +
@@ -141,7 +144,7 @@ namespace td {
         }
 
     private:
-        std::unique_ptr<std::array<T, kStride * kStride * 4>> terrain_;
+        std::unique_ptr<std::array<uint16_t, kStride * kStride * 4>> terrain_;
     };
     
 }

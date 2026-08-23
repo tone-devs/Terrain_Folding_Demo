@@ -35,6 +35,7 @@ namespace td {
             slots_[back_] = std::move(resource);
             auto const previous = middle_.exchange(back_ | kDirtyBit, std::memory_order_acq_rel);
             back_ = previous & kIndexMask;
+            slots_[back_].reset();
         }
 
         // AUDIO THREAD ONLY

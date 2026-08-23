@@ -41,7 +41,7 @@ namespace td {
             terrain_exchanger_.Consume();
             ApplyVoiceDeactivations();
             bool const voice_cache_dirty = ApplyPortalChanges();
-            ApplyActiveVoiceChanges();
+            ApplyActiveVoiceChanges(voice_cache_dirty);
 
             if (voice_cache_dirty) {
                 RecalculateVoiceCaches();
@@ -252,8 +252,6 @@ namespace td {
             auto const [new_u, new_v] = CalculateVoiceUvs(new_pos);
 
             current_dir = (u_heading * new_u + v_heading * new_v).Norm();
-
-            RecalculateVoiceCacheForVoice(lane);
         }
 
         void SetVoiceDirInternal(v_id_t const lane, Vec2<T> const &new_dir) {
@@ -270,8 +268,6 @@ namespace td {
 
             // sanitize orthonormal
             dir = (dir - (dir * pos) * pos).Norm();
-
-            RecalculateVoiceCacheForVoice(lane);
         }
 
         void SetVoiceFreqInternal(v_id_t const lane, T const freq) {
@@ -407,7 +403,7 @@ namespace td {
             }
         }
 
-        void ApplyActiveVoiceChanges() {
+        void ApplyActiveVoiceChanges(bool const voice_cache_dirty) {
             for (v_id_t v_id = 0; v_id < kMaxVoices; ++v_id) {
                 if (!voice_pending_flags_[v_id]) {
                     continue;
@@ -430,18 +426,26 @@ namespace td {
                     SetVoiceGainInternal(lane, pending.params.gain);
                     SetVoicePanInternal(lane, pending.params.pan);
 
+                    if (!voice_cache_dirty) {
+                        RecalculateVoiceCacheForVoice(lane);
+                    }
+
                     current.gen = pending.gen;
                 } else {
                     if (!pending.active) {
                         continue;
                     }
 
+                    bool path_changed = false;
+
                     if (pending.param_gens.pos != current.param_gens.pos) {
                         SetVoicePosInternal(lane, pending.params.pos);
+                        path_changed = true;
                     }
 
                     if (pending.param_gens.dir != current.param_gens.dir) {
                         SetVoiceDirInternal(lane, pending.params.dir);
+                        path_changed = true;
                     }
 
                     if (pending.param_gens.freq != current.param_gens.freq) {
@@ -454,6 +458,10 @@ namespace td {
 
                     if (pending.param_gens.pan != current.param_gens.pan) {
                         SetVoicePanInternal(lane, pending.params.pan);
+                    }
+
+                    if (path_changed && !voice_cache_dirty) {
+                        RecalculateVoiceCacheForVoice(lane);
                     }
                 }
                 current.param_gens = pending.param_gens;
@@ -476,9 +484,8 @@ namespace td {
             auto &pos = voice_pos_[v_id];
             auto &dir = voice_dir_[v_id];
 
-            auto new_pos = voice_step_cos_[v_id] * pos + voice_step_sin_[v_id] * dir;
-            dir = voice_step_cos_[v_id] * dir - voice_step_sin_[v_id] * pos;
-            pos = new_pos;
+            pos = (voice_step_cos_[v_id] * pos + voice_step_sin_[v_id] * dir).Norm();
+            dir = (dir - (dir * pos) * pos).Norm();
         } 
 
         void AdvanceVoice(v_id_t const v_id, T const angular_inc) {
@@ -531,8 +538,8 @@ namespace td {
             }
         }
         
-        void RecalculateVoiceCacheForVoice(v_id_t const v_id) const {
-            std::tie(voice_next_circ_[v_id], voice_dist_to_circ_[v_id]) = FindNextIntersection(v_id);
+        void RecalculateVoiceCacheForVoice(v_id_t const lane) const {
+            std::tie(voice_next_circ_[lane], voice_dist_to_circ_[lane]) = FindNextIntersection(lane);
         }
 
         void RecalculateVoiceCaches() const {
@@ -598,6 +605,8 @@ namespace td {
     public:
         // CONTROL THREAD ONLY
         bool IsPortalActive(p_id_t const p_id) const {
+            assert(p_id < kMaxPortals);
+
             return portal_pending_state_control_[p_id].params.active;
         }
 
@@ -622,7 +631,7 @@ namespace td {
         bool SetPortalRotation(p_id_t const p_id, T const rot) noexcept {
             assert(p_id < kMaxPortals);
 
-            if (rot < T{ 0.0 } || rot >= T{ 2.0 } * std::numbers::pi_v<T>) {
+            if (rot < T{ 0.0 } || rot >= T{ 2.0 } * std::numbers::pi_v<T> || !std::isfinite(rot)) {
                 return false;
             }
 
@@ -659,7 +668,7 @@ namespace td {
         bool SetCircleCutDepth(c_id_t const c_id, T cut_depth) noexcept {
             assert(c_id < kMaxCircles);
 
-            if (std::abs(cut_depth) >= T{ 0.99 }) {
+            if (std::abs(cut_depth) >= T{ 0.99 } || !std::isfinite(cut_depth)) {
                 return false;
             }
 
