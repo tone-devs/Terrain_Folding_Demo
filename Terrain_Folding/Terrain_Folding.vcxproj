@@ -137,6 +137,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="dependencies\stb_image.h" />
+    <ClInclude Include="src\exchanger.hpp" />
     <ClInclude Include="src\triple_buffer.hpp" />
     <ClInclude Include="src\oscillator.hpp" />
     <ClInclude Include="src\globals.hpp" />

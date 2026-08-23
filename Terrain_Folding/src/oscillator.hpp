@@ -11,6 +11,7 @@
 #include <numbers>
 #include <tuple>
 
+#include "exchanger.hpp"
 #include "globals.hpp"
 #include "terrain.hpp"
 #include "triple_buffer.hpp"
@@ -27,16 +28,19 @@ namespace td {
         static constexpr size_t kTextureResolution = (1ull << 12);
 
     public:
-        explicit Oscillator(std::filesystem::path const &terrain_file) : terrain_{ terrain_file } {
+        explicit Oscillator(std::filesystem::path const &terrain_file) : 
+            terrain_exchanger_{ std::make_unique<Terrain<float, kTextureResolution>>(terrain_file) } {
             InitVoices();
             InitPortals();
         }
 
+        // AUDIO THREAD ONLY
         void GetNextBlock(std::array<std::array<float, kBlockSize>, 2> &block) {
             CollectVoiceChanges();
             CollectPortalChanges();
+            terrain_exchanger_.Consume();
             ApplyVoiceDeactivations();
-            bool voice_cache_dirty = ApplyPortalChanges();
+            bool const voice_cache_dirty = ApplyPortalChanges();
             ApplyActiveVoiceChanges();
 
             if (voice_cache_dirty) {
@@ -107,6 +111,7 @@ namespace td {
         };
 
     public:
+        // CONTROL THREAD ONLY
         [[nodiscard]] std::optional<VoiceHandle> ActivateVoice(VoiceParamPack params) noexcept {
             auto &[pos, dir, freq, gain, pan] = params;
             if (!pos.IsUnit() ||
@@ -138,6 +143,7 @@ namespace td {
             return std::nullopt;
         }
 
+        // CONTROL THREAD ONLY
         [[nodiscard]] bool DeactivateVoice(VoiceHandle const &handle) noexcept {
             if (!IsVoiceActive(handle)) {
                 return false;
@@ -151,6 +157,7 @@ namespace td {
             return true;
         }
 
+        // CONTROL THREAD ONLY
         [[nodiscard]] bool SetVoicePos(VoiceHandle const &handle, Vec3<T> const &pos) noexcept {
             if (!IsVoiceActive(handle) || !pos.IsUnit()) {
                 return false;
@@ -165,6 +172,7 @@ namespace td {
             return true;
         }
 
+        // CONTROL THREAD ONLY
         [[nodiscard]] bool SetVoiceDir(VoiceHandle const &handle, Vec2<T> const &dir) noexcept {
             if (!IsVoiceActive(handle) || !dir.IsUnit()) {
                 return false;
@@ -179,6 +187,7 @@ namespace td {
             return true;
         }
 
+        // CONTROL THREAD ONLY
         [[nodiscard]] bool SetVoiceFreq(VoiceHandle const &handle, T const &freq) noexcept {
             if (!IsVoiceActive(handle) || 
                 freq < T{ 0.0 } || freq >= T{ kSampleRate / 2.0 } || !std::isfinite(freq)) {
@@ -194,6 +203,7 @@ namespace td {
             return true;
         }
 
+        // CONTROL THREAD ONLY
         [[nodiscard]] bool SetVoiceGain(VoiceHandle const &handle, float const &gain) noexcept {
             if (!IsVoiceActive(handle) || 
                 gain < 0.0f || !std::isfinite(gain)) {
@@ -209,6 +219,7 @@ namespace td {
             return true;
         }
 
+        // CONTROL THREAD ONLY
         [[nodiscard]] bool SetVoicePan(VoiceHandle const &handle, float const &pan) noexcept {
             if (!IsVoiceActive(handle) || 
                 pan < T{ 0.0 } || pan > 1.0f || !std::isfinite(pan)) {
@@ -452,8 +463,9 @@ namespace td {
 
         [[nodiscard]] std::array<float, kMaxVoices> GetVoicesSamples() const {
             std::array<float, kMaxVoices> samples{};
+            auto & terrain = terrain_exchanger_.Current();
             for (size_t i = 0; i < active_voices_; ++i) {
-                samples[i] = terrain_.ReadPos(voice_pos_[i]);
+                samples[i] = terrain.ReadPos(voice_pos_[i]);
             }
             return samples;
         }
@@ -584,10 +596,12 @@ namespace td {
         };
 
     public:
+        // CONTROL THREAD ONLY
         bool IsPortalActive(p_id_t const p_id) const {
             return portal_pending_state_control_[p_id].params.active;
         }
 
+        // CONTROL THREAD ONLY
         bool SetPortalActive(p_id_t const p_id, bool const active) noexcept {
             assert(p_id < kMaxPortals);
 
@@ -604,6 +618,7 @@ namespace td {
             return true;
         }
 
+        // CONTROL THREAD ONLY
         bool SetPortalRotation(p_id_t const p_id, T const rot) noexcept {
             assert(p_id < kMaxPortals);
 
@@ -620,6 +635,7 @@ namespace td {
             return true;
         }
 
+        // CONTROL THREAD ONLY
         bool SetCircleAxis(c_id_t const c_id, Vec3<T> axis) noexcept {
             assert(c_id < kMaxCircles);
 
@@ -639,6 +655,7 @@ namespace td {
             return true;
         }
 
+        // CONTROL THREAD ONLY
         bool SetCircleCutDepth(c_id_t const c_id, T cut_depth) noexcept {
             assert(c_id < kMaxCircles);
 
@@ -926,13 +943,11 @@ namespace td {
 
     public:
         void LoadTerrain(std::filesystem::path const &path) {
-            Terrain<float, kTextureResolution> new_terrain{ path };
-
-            std::swap(terrain_, new_terrain);
+            terrain_exchanger_.Publish(std::make_unique<Terrain<float, kTextureResolution>>(path));
         }
 
     private:
-        Terrain<float, kTextureResolution> terrain_;
+        Exchanger<Terrain<float, kTextureResolution>> terrain_exchanger_;
     };
     
 }
