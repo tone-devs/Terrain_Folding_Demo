@@ -484,7 +484,9 @@ namespace td {
             auto &pos = voice_pos_[v_id];
             auto &dir = voice_dir_[v_id];
 
-            pos = (voice_step_cos_[v_id] * pos + voice_step_sin_[v_id] * dir).Norm();
+            auto new_pos = voice_step_cos_[v_id] * pos + voice_step_sin_[v_id] * dir;
+            dir = voice_step_cos_[v_id] * dir - voice_step_sin_[v_id] * pos;
+            pos = new_pos.Norm();
             dir = (dir - (dir * pos) * pos).Norm();
         } 
 
