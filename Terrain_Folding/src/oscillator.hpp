@@ -34,8 +34,14 @@ namespace td {
 
         void GetNextBlock(std::array<std::array<float, kBlockSize>, 2> &block) {
             CollectVoiceChanges();
+            CollectPortalChanges();
             ApplyVoiceDeactivations();
+            bool voice_cache_dirty = ApplyPortalChanges();
             ApplyActiveVoiceChanges();
+
+            if (voice_cache_dirty) {
+                RecalculateVoiceCaches();
+            }
 
             for (size_t i = 0; i < 2; ++i) {
                 block[i].fill(0.0f);
@@ -337,8 +343,8 @@ namespace td {
                 voice_dist_to_circ_[id] = std::numeric_limits<T>::infinity();
             }
 
-            slot_to_lane_.fill(kInvalidVoice);
-            lane_to_slot_.fill(kInvalidVoice);
+            voice_slot_to_lane_.fill(kInvalidVoice);
+            voice_lane_to_slot_.fill(kInvalidVoice);
         }
 
         void CollectVoiceChanges() noexcept {
@@ -356,7 +362,7 @@ namespace td {
                     continue;
                 }
 
-                if (v_id_t const lane = slot_to_lane_[v_id]; lane != kInvalidVoice) {
+                if (v_id_t const lane = voice_slot_to_lane_[v_id]; lane != kInvalidVoice) {
                     v_id_t const last_lane = --active_voices_;
                     if (lane != last_lane) {
                         std::swap(voice_pos_[lane], voice_pos_[last_lane]);
@@ -372,13 +378,13 @@ namespace td {
                         std::swap(voice_amp_[0][lane], voice_amp_[0][last_lane]);
                         std::swap(voice_amp_[1][lane], voice_amp_[1][last_lane]);
 
-                        v_id_t const moved_v_id = lane_to_slot_[last_lane];
-                        slot_to_lane_[moved_v_id] = lane;
-                        lane_to_slot_[lane] = moved_v_id;
+                        v_id_t const moved_v_id = voice_lane_to_slot_[last_lane];
+                        voice_slot_to_lane_[moved_v_id] = lane;
+                        voice_lane_to_slot_[lane] = moved_v_id;
                     }
 
-                    lane_to_slot_[last_lane] = kInvalidVoice;
-                    slot_to_lane_[v_id] = kInvalidVoice;
+                    voice_lane_to_slot_[last_lane] = kInvalidVoice;
+                    voice_slot_to_lane_[v_id] = kInvalidVoice;
                 }
 
                 auto &current_state = voice_state_[v_id];
@@ -399,12 +405,12 @@ namespace td {
                 auto const &pending = voice_pending_states_audio_[v_id];
                 auto &current = voice_state_[v_id];
 
-                if (v_id_t &lane = slot_to_lane_[v_id]; lane == kInvalidVoice || pending.gen != current.gen) {
+                if (v_id_t &lane = voice_slot_to_lane_[v_id]; lane == kInvalidVoice || pending.gen != current.gen) {
                     if (lane == kInvalidVoice) {
                         assert(active_voices_ < kMaxVoices);
 
                         lane = active_voices_++;
-                        lane_to_slot_[lane] = v_id;
+                        voice_lane_to_slot_[lane] = v_id;
                     }
 
                     SetVoicePosInternal(lane, pending.params.pos);
@@ -517,22 +523,9 @@ namespace td {
             std::tie(voice_next_circ_[v_id], voice_dist_to_circ_[v_id]) = FindNextIntersection(v_id);
         }
 
-        void RecalculateVoiceCacheForNewCircle(c_id_t const c_id) const {
-            for (v_id_t v_id = 0; v_id < kMaxVoices; ++v_id) {
-                T const dist = Intersect(v_id, c_id);
-
-                if (dist < voice_dist_to_circ_[v_id]) {
-                    voice_next_circ_[v_id] = c_id;
-                    voice_dist_to_circ_[v_id] = dist;
-                }
-            }
-        }
-
-        void RecalculateVoiceCacheForRemovedCircle(c_id_t const c_id) const {
-            for (v_id_t v_id = 0; v_id < kMaxVoices; ++v_id) {
-                if (voice_next_circ_[v_id] == c_id) {
-                    std::tie(voice_next_circ_[v_id], voice_dist_to_circ_[v_id]) = FindNextIntersection(v_id);
-                }
+        void RecalculateVoiceCaches() const {
+            for (v_id_t lane = 0; lane < active_voices_; ++lane) {
+                RecalculateVoiceCacheForVoice(lane);
             }
         }
 
@@ -550,8 +543,8 @@ namespace td {
         std::array<VoicePendingState, kMaxVoices> voice_pending_states_audio_{};
         std::bitset<kMaxVoices> voice_pending_flags_{};
         std::array<VoiceState, kMaxVoices> voice_state_{};
-        std::array<v_id_t, kMaxVoices> slot_to_lane_{};
-        std::array<v_id_t, kMaxVoices> lane_to_slot_{};
+        std::array<v_id_t, kMaxVoices> voice_slot_to_lane_{};
+        std::array<v_id_t, kMaxVoices> voice_lane_to_slot_{};
 
         // Caching
         mutable std::array<T, kMaxVoices> voice_angular_inc_{};
@@ -567,82 +560,204 @@ namespace td {
         static c_id_t constexpr kMaxCircles = c_id_t{ 2 } * kMaxPortals;
         static c_id_t constexpr kInvalidCircle = std::numeric_limits<c_id_t>::max();
 
+        struct PortalParamPack {
+            T rotation{};
+            std::array<Vec3<T>, 2> axes{};
+            std::array<T, 2> cut_depths{};
+            bool active{};
+        };
+
+        struct PortalParamGenerations {
+            uint64_t rotation{};
+            std::array<uint64_t, 2> axes{};
+            std::array<uint64_t, 2> cut_depth{};
+            uint64_t active{};
+        };
+
+        struct PortalState {
+            PortalParamGenerations param_gens;
+        };
+
+        struct PendingPortalState {
+            PortalParamPack params{};
+            PortalParamGenerations param_gens{};
+        };
+
     public:
         bool IsPortalActive(p_id_t const p_id) const {
-            assert(p_id < kMaxPortals);
-
-            for (size_t i = 0; i < active_portals_; ++i) {
-                if (portals_[i] == p_id) { return true; }
-            }
-
-            return false;
+            return portal_pending_state_control_[p_id].params.active;
         }
 
-        bool ActivatePortalInternal(p_id_t const p_id) {
-            if (p_id >= kMaxPortals || active_portals_ >= kMaxPortals || IsPortalActive(p_id)) {
+        bool SetPortalActive(p_id_t const p_id, bool const active) noexcept {
+            assert(p_id < kMaxPortals);
+
+            if (active == IsPortalActive(p_id)) {
                 return false;
             }
 
-            portals_[active_portals_++] = p_id;
-            RecalculateVoiceCacheForNewCircle(p_id << 1 | 0);
-            RecalculateVoiceCacheForNewCircle(p_id << 1 | 1);
+            auto &current_pending = portal_pending_state_control_[p_id];
+            current_pending.params.active = active;
+            IncGen(current_pending.param_gens.active);
+
+            portal_state_buffers_[p_id].Publish(current_pending);
+
             return true;
         }
 
-        bool DeactivatePortalInternal(p_id_t const p_id) {
-            if (p_id >= kMaxPortals) {
+        bool SetPortalRotation(p_id_t const p_id, T const rot) noexcept {
+            assert(p_id < kMaxPortals);
+
+            if (rot < T{ 0.0 } || rot >= T{ 2.0 } * std::numbers::pi_v<T>) {
                 return false;
             }
 
-            for (size_t i = 0; i < active_portals_; ++i) {
-                if (portals_[i] == p_id) {
-                    std::swap(portals_[i], portals_[--active_portals_]);
+            auto &current_pending = portal_pending_state_control_[p_id];
+            current_pending.params.rotation = rot;
+            IncGen(current_pending.param_gens.rotation);
 
-                    RecalculateVoiceCacheForRemovedCircle(p_id << 1 | 0);
-                    RecalculateVoiceCacheForRemovedCircle(p_id << 1 | 1);
+            portal_state_buffers_[p_id].Publish(current_pending);
 
-                    return true;
-                }
-            }
-
-            return false;
+            return true;
         }
 
-        void SetPortalRotationInternal(p_id_t const p_id, T const rot) {
-            assert(p_id < kMaxPortals);
-
-            portal_rot_cos_[p_id] = std::cos(rot);
-            portal_rot_sin_[p_id] = std::sin(rot);
-        }
-
-        void SetCircleAxisInternal(c_id_t const c_id, Vec3<T> axis) {
+        bool SetCircleAxis(c_id_t const c_id, Vec3<T> axis) noexcept {
             assert(c_id < kMaxCircles);
-            assert(axis.IsUnit());
 
-            circle_axis_[c_id] = axis.Norm();
-            CalculateCircleUvs(c_id >> 1);
-            
-            if (IsPortalActive(c_id >> 1)) {
-                RecalculateVoiceCacheForRemovedCircle(c_id);
-                RecalculateVoiceCacheForNewCircle(c_id);
+            if (!axis.IsUnit()) {
+                return false;
             }
+
+            p_id_t p_id = c_id >> 1;
+            size_t circle_index = c_id & 1;
+
+            auto &current_pending = portal_pending_state_control_[p_id];
+            current_pending.params.axes[circle_index] = axis;
+            IncGen(current_pending.param_gens.axes[circle_index]);
+
+            portal_state_buffers_[p_id].Publish(current_pending);
+
+            return true;
         }
 
-        void SetCircleCutDepthInternal(c_id_t const c_id, T cut_depth) {
+        bool SetCircleCutDepth(c_id_t const c_id, T cut_depth) noexcept {
             assert(c_id < kMaxCircles);
-            assert(std::abs(cut_depth) < T{ 0.99 });
 
-            circle_cut_depth_[c_id] = cut_depth;
-
-            if (IsPortalActive(c_id >> 1)) {
-                RecalculateVoiceCacheForRemovedCircle(c_id);
-                RecalculateVoiceCacheForNewCircle(c_id);
+            if (std::abs(cut_depth) >= T{ 0.99 }) {
+                return false;
             }
+
+            p_id_t p_id = c_id >> 1;
+            size_t circle_index = c_id & 1;
+
+            auto &current_pending = portal_pending_state_control_[p_id];
+            current_pending.params.cut_depths[circle_index] = cut_depth;
+            IncGen(current_pending.param_gens.cut_depth[circle_index]);
+
+            portal_state_buffers_[p_id].Publish(current_pending);
+
+            return true;
         }
 
     private:
+        void CollectPortalChanges() noexcept {
+            for (p_id_t p_id = 0; p_id < kMaxPortals; ++p_id) {
+                if (auto pending = portal_state_buffers_[p_id].Consume()) {
+                    portal_pending_state_audio_[p_id] = *pending;
+                    portal_pending_flags_[p_id] = true;
+                }
+            }
+        }
+
+        bool ApplyPortalChanges() {
+            bool geometry_changed = false;
+            for (p_id_t p_id = 0; p_id < kMaxPortals; ++p_id) {
+                if (!portal_pending_flags_[p_id]) {
+                    continue;
+                }
+
+                auto const &pending = portal_pending_state_audio_[p_id];
+                auto &current = portal_states_[p_id];
+
+                if (pending.param_gens.active != current.param_gens.active) {
+                    geometry_changed |= SetPortalActiveInternal(portal_slot_to_lane_[p_id], pending.params.active);
+                }
+
+                p_id_t lane = portal_slot_to_lane_[p_id];
+
+                for (size_t i = 0; i < 2; ++i) {
+                    if (pending.param_gens.axes[i] != current.param_gens.axes[i]) {
+                        SetCircleAxisInternal(lane << 1 | i, pending.params.axes[i]);
+                        geometry_changed |= pending.params.active;
+                    }
+                }
+
+                for (size_t i = 0; i < 2; ++i) {
+                    if (pending.param_gens.cut_depth[i] != current.param_gens.cut_depth[i]) {
+                        SetCircleCutDepthInternal(lane << 1 | i, pending.params.cut_depths[i]);
+                        geometry_changed |= pending.params.active;
+                    }
+                }
+
+                if (pending.param_gens.rotation != current.param_gens.rotation) {
+                    SetPortalRotationInternal(lane, pending.params.rotation);
+                }
+
+                current.param_gens = pending.param_gens;
+                portal_pending_flags_[p_id] = false;
+            }
+            
+            return geometry_changed;
+        }
+
+        bool IsPortalActiveInternal(p_id_t const lane) const {
+            assert(lane < kMaxPortals);
+
+            return lane < active_portals_;
+        }
+
+        bool SetPortalActiveInternal(p_id_t const lane, bool const active) {
+            if (bool const currently_active = lane < active_portals_; active == currently_active) {
+                return false;
+            }
+
+            if (active) {
+                SwapPortalLanes(lane, active_portals_);
+                ++active_portals_;
+            } else {
+                --active_portals_;
+                SwapPortalLanes(lane, active_portals_);
+            }
+
+            return true;
+        }
+
+        void SetPortalRotationInternal(p_id_t const lane, T const rot) {
+            assert(lane < kMaxPortals);
+
+            portal_rot_cos_[lane] = std::cos(rot);
+            portal_rot_sin_[lane] = std::sin(rot);
+        }
+
+        void SetCircleAxisInternal(c_id_t const lane, Vec3<T> axis) {
+            assert(lane < kMaxCircles);
+            assert(axis.IsUnit());
+
+            circle_axis_[lane] = axis.Norm();
+            CalculateCircleUvs(lane >> 1);
+        }
+
+        void SetCircleCutDepthInternal(c_id_t const lane, T cut_depth) {
+            assert(lane < kMaxCircles);
+            assert(std::abs(cut_depth) < T{ 0.99 });
+
+            circle_cut_depth_[lane] = cut_depth;
+        }
+
         void InitPortals() {
             for (p_id_t p_id = 0; p_id < kMaxPortals; ++p_id) {
+                portal_slot_to_lane_[p_id] = p_id;
+                portal_lane_to_slot_[p_id] = p_id;
+
                 circle_axis_[p_id << 1 | 0] = {1.0, 0.0, 0.0};
                 circle_axis_[p_id << 1 | 1] = {0.0, 1.0, 0.0};
 
@@ -652,6 +767,29 @@ namespace td {
                 SetPortalRotationInternal(p_id, 0.0);
                 CalculateCircleUvs(p_id);
             }
+        }
+
+        void SwapPortalLanes(p_id_t const lane_a, p_id_t const lane_b) {
+            if (lane_a == lane_b) { return; }
+
+            std::swap(portal_rot_sin_[lane_a], portal_rot_sin_[lane_b]);
+            std::swap(portal_rot_cos_[lane_a], portal_rot_cos_[lane_b]);
+            std::swap(portal_u_[lane_a], portal_u_[lane_b]);
+            for (size_t i = 0; i < 2; ++i) {
+                std::swap(circle_axis_[lane_a << 1 | i], circle_axis_[lane_b << 1 | i]);
+            }
+            for (size_t i = 0; i < 2; ++i) {
+                std::swap(circle_cut_depth_[lane_a << 1 | i], circle_cut_depth_[lane_b << 1 | i]);
+            }
+            for (size_t i = 0; i < 2; ++i) {
+                std::swap(circle_v_[lane_a << 1 | i], circle_v_[lane_b << 1 | i]);
+            }
+                            
+            p_id_t &p_id_a = portal_lane_to_slot_[lane_a];
+            p_id_t &p_id_b = portal_lane_to_slot_[lane_b];
+            std::swap(p_id_a, p_id_b);
+            portal_slot_to_lane_[p_id_b] = lane_b;
+            portal_slot_to_lane_[p_id_a] = lane_a;
         }
 
         void CalculateCircleUvs(p_id_t const p_id) const {
@@ -709,14 +847,11 @@ namespace td {
             c_id_t current_circle = kInvalidCircle;
             T current_dist{ std::numeric_limits<T>::max() };
 
-            for (size_t i = 0; i < active_portals_; ++i) {
-                p_id_t const p_id = portals_[i];
-                for (c_id_t c_id = p_id << 1 | 0; c_id <= (p_id << 1 | 1); ++c_id) {
-                    if (auto new_dist = Intersect(v_id, c_id);
-                        new_dist < current_dist) {
-                        current_circle = c_id;
-                        current_dist = new_dist;
-                    }
+            for (c_id_t c_id = 0; c_id < 2 * active_portals_; ++c_id) {
+                if (auto new_dist = Intersect(v_id, c_id);
+                    new_dist < current_dist) {
+                    current_circle = c_id;
+                    current_dist = new_dist;
                 }
             }
 
@@ -730,7 +865,7 @@ namespace td {
             p_id_t const p_id = src_id >> 1;
             c_id_t const dst_id = src_id ^ 1;
 
-            assert(IsPortalActive(p_id));
+            assert(IsPortalActiveInternal(p_id));
 
             auto const rot_cos = portal_rot_cos_[p_id];
             auto const rot_sin = (src_id & 1) ? -portal_rot_sin_[p_id] : portal_rot_sin_[p_id];
@@ -767,16 +902,24 @@ namespace td {
             dir = (dir - (dir * pos) * pos).Norm();
         }
 
-        std::array<p_id_t, kMaxPortals> portals_{};
+        // State
         std::array<T, kMaxPortals> portal_rot_cos_{};
         std::array<T, kMaxPortals> portal_rot_sin_{};
-        p_id_t active_portals_{ 0 };
-
-        mutable std::array<Vec3<T>, kMaxPortals> portal_u_{};
-
         std::array<Vec3<T>, kMaxCircles> circle_axis_{};
         std::array<T, kMaxCircles> circle_cut_depth_{};
+        p_id_t active_portals_{ 0 };
 
+        // Threading
+        std::array<PortalState, kMaxPortals> portal_states_;
+        std::array<PendingPortalState, kMaxPortals> portal_pending_state_control_{};
+        std::array<TripleBuffer<PendingPortalState>, kMaxPortals> portal_state_buffers_{};
+        std::array<PendingPortalState, kMaxPortals> portal_pending_state_audio_{};
+        std::bitset<kMaxPortals> portal_pending_flags_{};
+        std::array<p_id_t, kMaxPortals> portal_lane_to_slot_{};
+        std::array<p_id_t, kMaxPortals> portal_slot_to_lane_{};
+
+        // Cache
+        mutable std::array<Vec3<T>, kMaxPortals> portal_u_{};
         mutable std::array<Vec3<T>, kMaxCircles> circle_v_{};
 
         // ############################## Terrain #############################

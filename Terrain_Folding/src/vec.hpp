@@ -210,7 +210,8 @@ namespace td {
 
         [[nodiscard]] constexpr bool IsUnit() const {
             static T constexpr kUnitEps = T{ 64.0 } * std::numeric_limits<T>::epsilon();
-            return FloatComparison<kUnitEps, kUnitEps>(MagSq(), T{ 1.0 });
+            T const mag_sq = MagSq();
+            return FloatComparison<kUnitEps, kUnitEps>(mag_sq, T{ 1.0 }) && std::isfinite(mag_sq);
         }
 
         [[nodiscard]] constexpr Vec Sign() const {
