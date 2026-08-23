@@ -95,9 +95,9 @@ namespace td {
 
         struct VoicePendingState {
             v_gen_t gen{};
-            bool active{};
             VoiceParamPack params;
             VoiceParamGenerations param_gens;
+            bool active{};
         };
 
     public:
@@ -227,8 +227,8 @@ namespace td {
             Vec3<T> &current_dir = voice_dir_[lane];
 
             auto const [old_u, old_v] = CalculateVoiceUvs(current_pos);
-            T u_heading = current_dir * old_u;
-            T v_heading = current_dir * old_v;
+            T const u_heading = current_dir * old_u;
+            T const v_heading = current_dir * old_v;
 
             current_pos = new_pos.Norm();
 
@@ -294,13 +294,13 @@ namespace td {
             Vec3<T> u = Vec3<T>{0.0, 0.0, 1.0}.Cross(pos);
 
             if (u.MagSq() <= kParallelEps<T>) {
-                Vec3<T> u_fallback = {1.0, 0.0, 0.0};
-                u = (u_fallback - (u_fallback * pos) * pos).Norm();
+                static Vec3<T> constexpr kUFallback = {1.0, 0.0, 0.0};
+                u = (kUFallback - (kUFallback * pos) * pos).Norm();
             } else {
                 u = u.Norm();
             }
 
-            Vec3<T> v = pos.Cross(u).Norm();
+            Vec3<T> const v = pos.Cross(u).Norm();
 
             return { .u = u, .v = v };
         }
@@ -357,7 +357,7 @@ namespace td {
                 }
 
                 if (v_id_t const lane = slot_to_lane_[v_id]; lane != kInvalidVoice) {
-                    v_id_t last_lane = --active_voices_;
+                    v_id_t const last_lane = --active_voices_;
                     if (lane != last_lane) {
                         std::swap(voice_pos_[lane], voice_pos_[last_lane]);
                         std::swap(voice_dir_[lane], voice_dir_[last_lane]);
@@ -372,7 +372,7 @@ namespace td {
                         std::swap(voice_amp_[0][lane], voice_amp_[0][last_lane]);
                         std::swap(voice_amp_[1][lane], voice_amp_[1][last_lane]);
 
-                        v_id_t moved_v_id = lane_to_slot_[last_lane];
+                        v_id_t const moved_v_id = lane_to_slot_[last_lane];
                         slot_to_lane_[moved_v_id] = lane;
                         lane_to_slot_[lane] = moved_v_id;
                     }
@@ -382,7 +382,7 @@ namespace td {
                 }
 
                 auto &current_state = voice_state_[v_id];
-                auto &new_state = voice_pending_states_audio_[v_id];
+                auto const &new_state = voice_pending_states_audio_[v_id];
                 current_state.gen = new_state.gen;
                 current_state.param_gens = new_state.param_gens;
 
@@ -396,11 +396,10 @@ namespace td {
                     continue;
                 }
 
-                auto &pending = voice_pending_states_audio_[v_id];
+                auto const &pending = voice_pending_states_audio_[v_id];
                 auto &current = voice_state_[v_id];
 
-                v_id_t &lane = slot_to_lane_[v_id];
-                if (lane == kInvalidVoice || pending.gen != current.gen) {
+                if (v_id_t &lane = slot_to_lane_[v_id]; lane == kInvalidVoice || pending.gen != current.gen) {
                     if (lane == kInvalidVoice) {
                         assert(active_voices_ < kMaxVoices);
 
@@ -658,13 +657,13 @@ namespace td {
         void CalculateCircleUvs(p_id_t const p_id) const {
             assert(p_id < kMaxPortals);
 
-            c_id_t a_c_id = p_id << 1 | 0;
-            c_id_t b_c_id = p_id << 1 | 1;
+            c_id_t const a_c_id = p_id << 1 | 0;
+            c_id_t const b_c_id = p_id << 1 | 1;
             
             auto const c1_axis = circle_axis_[a_c_id];
             auto const c2_axis = circle_axis_[b_c_id];
 
-            if (auto new_u = c1_axis.Cross(c2_axis); new_u.MagSq() > kParallelEps<T>) {
+            if (auto const new_u = c1_axis.Cross(c2_axis); new_u.MagSq() > kParallelEps<T>) {
                 portal_u_[p_id] = new_u.Norm();
             }
 
@@ -698,8 +697,8 @@ namespace td {
                 return std::numeric_limits<T>::max();
             }
 
-            auto intersection_1 = WrapPositiveClosed(std::atan2(b, a) + std::acos(normed_cut), T{ 2.0 } * std::numbers::pi_v<T>);
-            auto intersection_2 = WrapPositiveClosed(std::atan2(b, a) - std::acos(normed_cut), T{ 2.0 } * std::numbers::pi_v<T>);
+            auto const intersection_1 = WrapPositiveClosed(std::atan2(b, a) + std::acos(normed_cut), T{ 2.0 } * std::numbers::pi_v<T>);
+            auto const intersection_2 = WrapPositiveClosed(std::atan2(b, a) - std::acos(normed_cut), T{ 2.0 } * std::numbers::pi_v<T>);
 
             return std::min(intersection_1, intersection_2);
         }
@@ -728,14 +727,13 @@ namespace td {
             assert(v_id < kMaxVoices);
             assert(src_id < kMaxCircles);
 
-            p_id_t p_id = src_id >> 1;
-            c_id_t dst_id = src_id ^ 1;
+            p_id_t const p_id = src_id >> 1;
+            c_id_t const dst_id = src_id ^ 1;
 
             assert(IsPortalActive(p_id));
 
-            auto rot_cos = portal_rot_cos_[p_id];
-            auto rot_sin = portal_rot_sin_[p_id];
-            if (src_id & 1) { rot_sin *= T{ -1.0 }; }
+            auto const rot_cos = portal_rot_cos_[p_id];
+            auto const rot_sin = (src_id & 1) ? -portal_rot_sin_[p_id] : portal_rot_sin_[p_id];
 
             auto const &portal_u = portal_u_[p_id];
             auto const &src_v = circle_v_[src_id];
