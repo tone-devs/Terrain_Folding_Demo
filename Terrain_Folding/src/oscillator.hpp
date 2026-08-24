@@ -20,6 +20,15 @@
 namespace td {
 
     static_assert(std::atomic_uint8_t::is_always_lock_free);
+    
+    /// <summary>
+    /// Terrain Oscillator defined over S2.  Circular portals can be instantiated on the surface, 
+    /// and when a voice crosses a portal, it is transported to the corresponding portal output.
+    ///
+    /// Expects to be accessed by one control thread, and one audio thread.  
+    /// Both threads should be stopped and/or joined before Oscillator is destroyed.
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
 
     template<typename T>
         requires (std::floating_point<T>)
