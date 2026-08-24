@@ -104,7 +104,10 @@ namespace td {
             Vec2<TP> const patch_index_vec = (pos.XY().Sign() + TP{ 1.0 }) * TP{ 0.5 };
             size_t const patch_index = static_cast<size_t>(patch_index_vec.X() * TP{ 2.0 }) + static_cast<size_t>(patch_index_vec.Y());
 
-            Vec2<TP> const uv = pos.Z() >= TP{ 0.0 } ? (pos.Abs() / pos.L1()).XY() : TP{ 1.0 } - (pos.Abs() / pos.L1()).YX();
+            TP l1 = pos.L1();
+            if (l1 <= TP{ 0.0 } || !std::isfinite(l1)) { return T{ 0.0 }; }
+
+            Vec2<TP> const uv = pos.Z() >= TP{ 0.0 } ? (pos.Abs() / l1).XY() : TP{ 1.0 } - (pos.Abs() / l1).YX();
             Vec2<TP> const tex_coord = uv * kMaxCoord;
 
             size_t const x_i = static_cast<size_t>(std::min(tex_coord.X(), kMaxCoord - TP{ 1.0 }));
