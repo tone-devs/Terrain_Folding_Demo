@@ -153,7 +153,7 @@ namespace td {
                 pending_state.params = params;
                 IncParamGens(pending_state.param_gens);
 
-                voice_state_buffers_[v_id].Publish(pending_state);
+                voice_state_buffers_.Publish(v_id, pending_state);
 
                 return { VoiceHandle{ .gen = pending_state.gen, .v_id = v_id } };
             } 
@@ -169,7 +169,7 @@ namespace td {
             auto &current_pending = voice_pending_states_control_[handle.v_id];
             current_pending.active = false;
 
-            voice_state_buffers_[handle.v_id].Publish(current_pending);
+            voice_state_buffers_.Publish(handle.v_id, current_pending);
 
             return true;
         }
@@ -184,7 +184,7 @@ namespace td {
             current_pending.params.pos = pos;
             IncGen(current_pending.param_gens.pos);
 
-            voice_state_buffers_[handle.v_id].Publish(current_pending);
+            voice_state_buffers_.Publish(handle.v_id, current_pending);
 
             return true;
         }
@@ -199,7 +199,7 @@ namespace td {
             current_pending.params.dir = dir;
             IncGen(current_pending.param_gens.dir);
 
-            voice_state_buffers_[handle.v_id].Publish(current_pending);
+            voice_state_buffers_.Publish(handle.v_id, current_pending);
 
             return true;
         }
@@ -215,7 +215,7 @@ namespace td {
             current_pending.params.freq = freq;
             IncGen(current_pending.param_gens.freq);
 
-            voice_state_buffers_[handle.v_id].Publish(current_pending);
+            voice_state_buffers_.Publish(handle.v_id, current_pending);
 
             return true;
         }
@@ -231,7 +231,7 @@ namespace td {
             current_pending.params.gain = gain;
             IncGen(current_pending.param_gens.gain);
 
-            voice_state_buffers_[handle.v_id].Publish(current_pending);
+            voice_state_buffers_.Publish(handle.v_id, current_pending);
 
             return true;
         }
@@ -247,7 +247,7 @@ namespace td {
             current_pending.params.pan = pan;
             IncGen(current_pending.param_gens.pan);
 
-            voice_state_buffers_[handle.v_id].Publish(current_pending);
+            voice_state_buffers_.Publish(handle.v_id, current_pending);
 
             return true;
         }
@@ -373,7 +373,7 @@ namespace td {
 
         void CollectVoiceChanges() noexcept {
             for (v_id_t v_id = 0; v_id < kMaxVoices; ++v_id) {
-                if (auto pending = voice_state_buffers_[v_id].Consume()) {
+                if (auto pending = voice_state_buffers_.Consume(v_id)) {
                     voice_pending_states_audio_[v_id] = *pending;
                     voice_pending_flags_[v_id] = true;
                 }
@@ -570,9 +570,9 @@ namespace td {
         uint8_t active_voice_count_ = 0;
 
         // Threading
-        std::array<VoicePendingState, kMaxVoices> voice_pending_states_control_{};
-        std::array<TripleBuffer<VoicePendingState>, kMaxVoices> voice_state_buffers_{};
-        std::array<VoicePendingState, kMaxVoices> voice_pending_states_audio_{};
+        alignas(kCacheLine) std::array<VoicePendingState, kMaxVoices> voice_pending_states_control_{};
+        TripleBufferBank<VoicePendingState, kMaxVoices> voice_state_buffers_{};
+        alignas(kCacheLine) std::array<VoicePendingState, kMaxVoices> voice_pending_states_audio_{};
         std::bitset<kMaxVoices> voice_pending_flags_{};
         std::array<VoiceState, kMaxVoices> voice_state_{};
         std::array<v_lane_t, kMaxVoices> voice_slot_to_lane_{};
@@ -636,7 +636,7 @@ namespace td {
             current_pending.params.active = active;
             IncGen(current_pending.param_gens.active);
 
-            portal_state_buffers_[p_id].Publish(current_pending);
+            portal_state_buffers_.Publish(p_id, current_pending);
 
             return true;
         }
@@ -653,7 +653,7 @@ namespace td {
             current_pending.params.rotation = rot;
             IncGen(current_pending.param_gens.rotation);
 
-            portal_state_buffers_[p_id].Publish(current_pending);
+            portal_state_buffers_.Publish(p_id, current_pending);
 
             return true;
         }
@@ -673,7 +673,7 @@ namespace td {
             current_pending.params.axes[circle_index] = axis;
             IncGen(current_pending.param_gens.axes[circle_index]);
 
-            portal_state_buffers_[p_id].Publish(current_pending);
+            portal_state_buffers_.Publish(p_id, current_pending);
 
             return true;
         }
@@ -693,7 +693,7 @@ namespace td {
             current_pending.params.cut_depths[circle_index] = cut_depth;
             IncGen(current_pending.param_gens.cut_depth[circle_index]);
 
-            portal_state_buffers_[p_id].Publish(current_pending);
+            portal_state_buffers_.Publish(p_id, current_pending);
 
             return true;
         }
@@ -701,7 +701,7 @@ namespace td {
     private:
         void CollectPortalChanges() noexcept {
             for (p_id_t p_id = 0; p_id < kMaxPortals; ++p_id) {
-                if (auto pending = portal_state_buffers_[p_id].Consume()) {
+                if (auto pending = portal_state_buffers_.Consume(p_id)) {
                     portal_pending_state_audio_[p_id] = *pending;
                     portal_pending_flags_[p_id] = true;
                 }
@@ -952,11 +952,11 @@ namespace td {
         uint8_t active_portal_count_{ 0 };
 
         // Threading
-        std::array<PortalState, kMaxPortals> portal_states_;
-        std::array<PendingPortalState, kMaxPortals> portal_pending_state_control_{};
-        std::array<TripleBuffer<PendingPortalState>, kMaxPortals> portal_state_buffers_{};
-        std::array<PendingPortalState, kMaxPortals> portal_pending_state_audio_{};
+        alignas(kCacheLine) std::array<PendingPortalState, kMaxPortals> portal_pending_state_control_{};
+        TripleBufferBank<PendingPortalState, kMaxPortals> portal_state_buffers_{};
+        alignas(kCacheLine) std::array<PendingPortalState, kMaxPortals> portal_pending_state_audio_{};
         std::bitset<kMaxPortals> portal_pending_flags_{};
+        std::array<PortalState, kMaxPortals> portal_states_;
         std::array<p_id_t, kMaxPortals> portal_lane_to_slot_{};
         std::array<p_lane_t, kMaxPortals> portal_slot_to_lane_{};
 

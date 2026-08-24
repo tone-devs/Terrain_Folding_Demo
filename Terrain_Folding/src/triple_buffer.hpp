@@ -5,43 +5,60 @@
 #include <cstdint>
 #include <optional>
 
+#include "globals.hpp"
+
 namespace td {
     
-    template<typename T>
-    class TripleBuffer {
+    template<typename T, size_t size>
+    class TripleBufferBank {
     private:
-        static constexpr uint8_t kIndexMask = 0b011;
-        static constexpr uint8_t kDirtyBit = 0b100;
+        static uint8_t constexpr kIndexMask = 0b011;
+        static uint8_t constexpr kDirtyBit = 0b100;
+
+        struct alignas(kCacheLine) Slot {
+            T value{};
+        };
 
     public:
+        TripleBufferBank() noexcept {
+            back_.fill(0);
+            for (auto &middle : middle_) {
+                middle.store(1, std::memory_order_relaxed);
+            }
+            front_.fill(2);
+        }
+
         // Call only from UI thread
-        void Publish(T const &value) noexcept {
-            buffers_[back_] = value;
+        void Publish(size_t const slot, T const &value) noexcept {
+            auto &back = back_[slot];
+            buffers_[back][slot].value = value;
 
-            uint8_t const previous = middle_.exchange(back_ | kDirtyBit, std::memory_order_acq_rel);
+            uint8_t const previous = middle_[slot].exchange(back | kDirtyBit, std::memory_order_acq_rel);
 
-            back_ = previous & kIndexMask;
+            back = previous & kIndexMask;
         }
 
         // Call only from Audio thread
-        std::optional<T> Consume() noexcept {
-            if ((middle_.load(std::memory_order_acquire) & kDirtyBit) == 0) {
+        std::optional<T> Consume(size_t const slot) noexcept {
+            if ((middle_[slot].load(std::memory_order_acquire) & kDirtyBit) == 0) {
                 return std::nullopt;
             }
 
-            uint8_t const previous = middle_.exchange(front_, std::memory_order_acq_rel);
+            auto &front = front_[slot];
 
-            front_ = previous & kIndexMask;
-            return { buffers_[front_] };
+            uint8_t const previous = middle_[slot].exchange(front, std::memory_order_acq_rel);
+
+            front = previous & kIndexMask;
+            return { buffers_[front][slot].value };
         }
 
 
     private:
-        std::array<T, 3> buffers_;
+        std::array<std::array<Slot, size>, 3> buffers_;
 
-        uint8_t back_{ 0 };
-        std::atomic_uint8_t middle_{ 1 };
-        uint8_t front_{ 2 };
+        alignas(kCacheLine) std::array<uint8_t, size> back_;
+        alignas(kCacheLine) std::array<std::atomic_uint8_t, size> middle_;
+        alignas(kCacheLine) std::array<uint8_t, size> front_;
     };
 
 }

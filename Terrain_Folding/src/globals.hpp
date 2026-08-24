@@ -4,6 +4,8 @@
 
 namespace td {
     
+    static size_t constexpr kCacheLine = 64;
+
     static double constexpr kSampleRate = 48'000.0;
     static size_t constexpr kBlockSize = 256;
 
