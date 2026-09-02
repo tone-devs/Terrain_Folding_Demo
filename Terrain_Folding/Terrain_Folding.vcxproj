@@ -144,6 +144,9 @@
     <ClInclude Include="src\vec.hpp" />
     <ClInclude Include="src\terrain.hpp" />
   </ItemGroup>
+  <ItemGroup>
+    <Image Include="assets\World_elevation_map.png" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

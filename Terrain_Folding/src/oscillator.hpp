@@ -28,7 +28,7 @@ namespace td {
     /// Expects to be accessed by one control thread, and one audio thread.  
     /// Both threads should be stopped and/or joined before Oscillator is destroyed.
     /// </summary>
-    /// <typeparam name="T"></typeparam>
+    /// <typeparam name="T"> The type in which the geometry is calculated.</typeparam>
 
     template<typename T>
         requires (std::floating_point<T>)
@@ -80,7 +80,7 @@ namespace td {
 
         using v_id_t = uint8_t;
         using v_lane_t = uint8_t;
-
+    
         using p_id_t = uint8_t;
         using p_lane_t = uint8_t;
 

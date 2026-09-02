@@ -10,6 +10,7 @@ int main(int argc, char **argv) {
     }
 
     td::Oscillator<double> osc{argv[1]};
+    std::cout << sizeof(osc) << "\n";
     std::array<std::array<float, td::kBlockSize>, 2> audio_block;
     osc.GetNextBlock(audio_block);
 }
